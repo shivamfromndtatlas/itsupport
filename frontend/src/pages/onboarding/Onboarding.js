@@ -53,6 +53,20 @@ const EMPTY_FORM = {
   notes: '',
 };
 
+const formatApiErrors = (data) => {
+  if (!data) return 'Submission failed.';
+  if (typeof data === 'string') return data;
+  if (data.detail) return data.detail;
+
+  return Object.entries(data)
+    .map(([field, messages]) => {
+      const label = field.replaceAll('_', ' ');
+      const text = Array.isArray(messages) ? messages.join(' ') : String(messages);
+      return `${label}: ${text}`;
+    })
+    .join(' ');
+};
+
 function TabPanel({ value, index, children }) {
   return value === index ? <Box sx={{ pt: 2 }}>{children}</Box> : null;
 }
@@ -95,13 +109,25 @@ function Onboarding() {
   const handleSubmit = async () => {
     setSubmitting(true);
     try {
-      await api.post('/onboarding/', form);
+      const payload = {
+        full_name: form.full_name.trim(),
+        employee_id: form.employee_id.trim(),
+        personal_email: form.email.trim(),
+        contact_number: form.contact_number.trim(),
+        complete_address: form.notes.trim(),
+        designation: form.designation.trim(),
+        core_process: form.core_process,
+        date_of_joining: form.date_of_joining,
+        line_manager: form.reporting_manager.trim(),
+      };
+
+      await api.post('/onboarding/', payload);
       showSnack('New joiner request submitted.');
       setForm(EMPTY_FORM);
       fetchRequests();
       setTab(0);
     } catch (err) {
-      showSnack(err.response?.data?.detail || 'Submission failed.', 'error');
+      showSnack(formatApiErrors(err.response?.data), 'error');
     } finally {
       setSubmitting(false);
     }
