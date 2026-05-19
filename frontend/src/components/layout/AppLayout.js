@@ -31,6 +31,7 @@ import LogoutIcon from '@mui/icons-material/Logout';
 import InventoryIcon from '@mui/icons-material/Inventory';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
+import TuneIcon from '@mui/icons-material/Tune';
 import { useAuth } from '../../context/AuthContext';
 
 const DRAWER_OPEN_WIDTH = 260;
@@ -92,6 +93,12 @@ const NAV_SECTIONS = [
         label: 'SOP Management',
         icon: <MenuBookIcon />,
         path: '/sop',
+        roles: ['super_admin', 'it_specialist'],
+      },
+      {
+        label: 'Inventory Config',
+        icon: <TuneIcon />,
+        path: '/inventory/config',
         roles: ['super_admin', 'it_specialist'],
       },
     ],

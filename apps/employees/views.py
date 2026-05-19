@@ -15,6 +15,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
     queryset = Employee.objects.select_related('line_manager').all()
     serializer_class = EmployeeSerializer
+    pagination_class = None
 
     def get_permissions(self):
         if self.action in ('create', 'update', 'partial_update', 'destroy'):

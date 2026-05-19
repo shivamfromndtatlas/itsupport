@@ -12,12 +12,12 @@ class NewJoinerRequest(models.Model):
     employee_id = models.CharField(max_length=50)
     contact_number = models.CharField(max_length=20)
     personal_email = models.EmailField()
-    complete_address = models.TextField()
+    complete_address = models.TextField(blank=True, default='')
     designation = models.CharField(max_length=200)
-    core_process = models.CharField(max_length=200)
+    core_process = models.CharField(max_length=200, blank=True)
     alias_name = models.CharField(max_length=100, blank=True)
     date_of_joining = models.DateField()
-    line_manager = models.CharField(max_length=200)
+    line_manager = models.CharField(max_length=200, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     submitted_by = models.ForeignKey(
         'users.User', on_delete=models.SET_NULL, null=True, related_name='onboarding_requests'

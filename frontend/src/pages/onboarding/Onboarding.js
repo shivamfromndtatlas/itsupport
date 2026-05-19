@@ -7,6 +7,7 @@ import {
   Button,
   Chip,
   IconButton,
+  MenuItem,
   Tooltip,
   Snackbar,
   Alert,
@@ -20,6 +21,18 @@ import DataTable from '../../components/common/DataTable';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
 import api from '../../api/axios';
 import { useAuth } from '../../context/AuthContext';
+
+const CORE_PROCESSES = [
+  { code: '01AOS', name: 'AEIS Operating Process' },
+  { code: '02BDP', name: 'Business Development Process' },
+  { code: '03HRP', name: 'Peoples Process' },
+  { code: '04OPS', name: 'Operations Management Process' },
+  { code: '05QCP', name: 'Quality Assurance & Compliance Process' },
+  { code: '06TMP', name: 'Technology Management Process' },
+  { code: '07FIN', name: 'Finance Process' },
+  { code: '08TRD', name: 'Training & Development Process' },
+  { code: '09ILP', name: 'Innovation Lab Process' },
+];
 
 const STATUS_COLOR = {
   pending: 'warning',
@@ -200,8 +213,6 @@ function Onboarding() {
                   { name: 'contact_number', label: 'Contact Number' },
                   { name: 'department', label: 'Department' },
                   { name: 'designation', label: 'Designation' },
-                  { name: 'date_of_joining', label: 'Date of Joining', type: 'date', shrink: true },
-                  { name: 'core_process', label: 'Core Process' },
                   { name: 'reporting_manager', label: 'Reporting Manager' },
                 ].map((field) => (
                   <Grid item xs={12} sm={6} key={field.name}>
@@ -212,10 +223,45 @@ function Onboarding() {
                       fullWidth
                       value={form[field.name]}
                       onChange={handleChange}
-                      InputLabelProps={field.shrink ? { shrink: true } : undefined}
                     />
                   </Grid>
                 ))}
+
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    type="date"
+                    label="Date of Joining"
+                    name="date_of_joining"
+                    fullWidth
+                    value={form.date_of_joining}
+                    onChange={handleChange}
+                    InputLabelProps={{ shrink: true }}
+                    InputProps={{ notched: true }}
+                  />
+                </Grid>
+
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    select
+                    label="Core Process"
+                    name="core_process"
+                    fullWidth
+                    value={form.core_process}
+                    onChange={handleChange}
+                    InputLabelProps={{ shrink: true }}
+                  >
+                    {CORE_PROCESSES.map((cp) => (
+                      <MenuItem key={cp.code} value={cp.code}>
+                        <Box>
+                          <Box component="span" sx={{ fontWeight: 600, mr: 1, color: 'primary.main' }}>
+                            {cp.code}
+                          </Box>
+                          {cp.name}
+                        </Box>
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
 
                 <Grid item xs={12}>
                   <TextField

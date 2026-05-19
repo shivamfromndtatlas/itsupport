@@ -45,3 +45,8 @@ class NewJoinerRequestSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
+        extra_kwargs = {
+            'complete_address': {'required': False, 'allow_blank': True},
+            'line_manager': {'required': False, 'allow_blank': True},
+            'core_process': {'required': False, 'allow_blank': True},
+        }

@@ -15,6 +15,7 @@ import Onboarding from './pages/onboarding/Onboarding';
 import SOPManagement from './pages/sop/SOPManagement';
 import InventoryDashboard from './pages/inventory/InventoryDashboard';
 import Assets from './pages/inventory/Assets';
+import InventoryConfig from './pages/inventory/InventoryConfig';
 import AssetAllocation from './pages/allocation/AssetAllocation';
 import Tickets from './pages/tickets/Tickets';
 
@@ -88,6 +89,16 @@ function App() {
             element={
               <RoleRoute roles={['super_admin', 'it_specialist']}>
                 <Assets />
+              </RoleRoute>
+            }
+          />
+
+          {/* Inventory Config – super_admin, it_specialist */}
+          <Route
+            path="/inventory/config"
+            element={
+              <RoleRoute roles={['super_admin', 'it_specialist']}>
+                <InventoryConfig />
               </RoleRoute>
             }
           />

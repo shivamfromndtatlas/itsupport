@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.employees.models import Employee
+from apps.employees.serializers import CORE_PROCESS_MAP
 from apps.users.permissions import IsHROrSuperAdmin, IsITOrHROrSuperAdmin
 
 from .models import NewJoinerRequest

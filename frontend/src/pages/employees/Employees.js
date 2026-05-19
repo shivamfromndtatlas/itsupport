@@ -24,13 +24,25 @@ import { useAuth } from '../../context/AuthContext';
 const STATUS_OPTIONS = ['active', 'inactive', 'on_leave'];
 const STATUS_COLORS = { active: 'success', inactive: 'default', on_leave: 'warning' };
 
+const CORE_PROCESSES = [
+  { code: '01AOS', name: 'AEIS Operating Process' },
+  { code: '02BDP', name: 'Business Development Process' },
+  { code: '03HRP', name: 'Peoples Process' },
+  { code: '04OPS', name: 'Operations Management Process' },
+  { code: '05QCP', name: 'Quality Assurance & Compliance Process' },
+  { code: '06TMP', name: 'Technology Management Process' },
+  { code: '07FIN', name: 'Finance Process' },
+  { code: '08TRD', name: 'Training & Development Process' },
+  { code: '09ILP', name: 'Innovation Lab Process' },
+];
+
 const EMPTY_FORM = {
   employee_id: '',
   full_name: '',
-  email: '',
+  alias_name: '',
+  official_email: '',
   contact_number: '',
-  core_process: '',
-  department: '',
+  core_process_code: '',
   designation: '',
   date_of_joining: '',
   status: 'active',
@@ -80,10 +92,10 @@ function Employees() {
     setForm({
       employee_id: row.employee_id || '',
       full_name: row.full_name || '',
-      email: row.email || '',
+      alias_name: row.alias_name || '',
+      official_email: row.official_email || '',
       contact_number: row.contact_number || '',
-      core_process: row.core_process || '',
-      department: row.department || '',
+      core_process_code: row.core_process_code || '',
       designation: row.designation || '',
       date_of_joining: row.date_of_joining || '',
       status: row.status || 'active',
@@ -127,9 +139,18 @@ function Employees() {
   const columns = [
     { field: 'employee_id', headerName: 'Employee ID', width: 130 },
     { field: 'full_name', headerName: 'Full Name', flex: 1, minWidth: 150 },
-    { field: 'email', headerName: 'Email', flex: 1.2, minWidth: 180 },
+    { field: 'official_email', headerName: 'Email', flex: 1.2, minWidth: 180 },
     { field: 'contact_number', headerName: 'Contact', width: 140 },
-    { field: 'core_process', headerName: 'Core Process', flex: 1, minWidth: 140 },
+    {
+      field: 'core_process_code',
+      headerName: 'Process Code',
+      width: 130,
+      renderCell: ({ value }) =>
+        value ? (
+          <Chip label={value} size="small" variant="outlined" color="primary" />
+        ) : '—',
+    },
+    { field: 'core_process_name', headerName: 'Core Process', flex: 1, minWidth: 200 },
     {
       field: 'status',
       headerName: 'Status',
@@ -183,14 +204,12 @@ function Employees() {
             {[
               { name: 'employee_id', label: 'Employee ID', disabled: !!editRow },
               { name: 'full_name', label: 'Full Name' },
-              { name: 'email', label: 'Email', type: 'email' },
+              { name: 'alias_name', label: 'Alias Name' },
+              { name: 'official_email', label: 'Email', type: 'email' },
               { name: 'contact_number', label: 'Contact Number' },
-              { name: 'core_process', label: 'Core Process' },
-              { name: 'department', label: 'Department' },
               { name: 'designation', label: 'Designation' },
-              { name: 'date_of_joining', label: 'Date of Joining', type: 'date', shrink: true },
             ].map((field) => (
-              <Grid item xs={12} sm={6} key={field.name}>
+              <Grid item xs={12} sm={4} key={field.name}>
                 <TextField
                   label={field.label}
                   name={field.name}
@@ -199,11 +218,47 @@ function Employees() {
                   value={form[field.name]}
                   onChange={handleChange}
                   disabled={field.disabled}
-                  InputLabelProps={field.shrink ? { shrink: true } : undefined}
                 />
               </Grid>
             ))}
-            <Grid item xs={12} sm={6}>
+
+            {/* Pulled out of the map so shrink + notched are explicit for native date input */}
+            <Grid item xs={12} sm={4}>
+              <TextField
+                type="date"
+                label="Date of Joining"
+                name="date_of_joining"
+                fullWidth
+                value={form.date_of_joining}
+                onChange={handleChange}
+                InputLabelProps={{ shrink: true }}
+                InputProps={{ notched: true }}
+              />
+            </Grid>
+
+            <Grid item xs={12} sm={8}>
+              <TextField
+                select
+                label="Core Process"
+                name="core_process_code"
+                fullWidth
+                value={form.core_process_code}
+                onChange={handleChange}
+                InputLabelProps={{ shrink: true }}
+              >
+                {CORE_PROCESSES.map((cp) => (
+                  <MenuItem key={cp.code} value={cp.code}>
+                    <Box>
+                      <Box component="span" sx={{ fontWeight: 600, mr: 1, color: 'primary.main' }}>
+                        {cp.code}
+                      </Box>
+                      {cp.name}
+                    </Box>
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={4}>
               <TextField
                 select
                 label="Status"

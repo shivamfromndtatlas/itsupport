@@ -32,8 +32,6 @@ const ASSET_STATUS_COLORS = {
   retired: 'default',
 };
 
-const ASSET_TYPES = ['laptop', 'desktop', 'monitor', 'keyboard', 'mouse', 'printer', 'phone', 'other'];
-
 const EMPTY_ASSET = {
   asset_type: '',
   asset_id: '',
@@ -41,7 +39,7 @@ const EMPTY_ASSET = {
   vendor: '',
   purchase_date: '',
   purchase_cost: '',
-  status: 'available',
+  status: '',
   attribute_values: {},
 };
 
@@ -52,11 +50,9 @@ const EMPTY_LICENSE = {
   vendor: '',
   purchase_date: '',
   expiry_date: '',
-  license_type: 'perpetual',
+  license_type: '',
   notes: '',
 };
-
-const LICENSE_TYPES = ['perpetual', 'subscription', 'trial', 'open_source'];
 
 function TabPanel({ value, index, children }) {
   return value === index ? <Box sx={{ pt: 2 }}>{children}</Box> : null;
@@ -83,8 +79,27 @@ function Assets() {
   const [savingLicense, setSavingLicense] = useState(false);
   const [confirmLicense, setConfirmLicense] = useState({ open: false, row: null });
 
+  const [assetTypes, setAssetTypes] = useState([]);
+  const [statusChoices, setStatusChoices] = useState([]);
+  const [licenseTypeChoices, setLicenseTypeChoices] = useState([]);
+
   const [snack, setSnack] = useState({ open: false, msg: '', severity: 'success' });
   const showSnack = (msg, severity = 'success') => setSnack({ open: true, msg, severity });
+
+  const fetchChoices = useCallback(async () => {
+    try {
+      const [typesRes, statusRes, licenseTypeRes] = await Promise.all([
+        api.get('/inventory/asset-types/'),
+        api.get('/inventory/form-choices/status-choices/'),
+        api.get('/inventory/form-choices/license-type-choices/'),
+      ]);
+      setAssetTypes(Array.isArray(typesRes.data) ? typesRes.data : typesRes.data.results || []);
+      setStatusChoices(Array.isArray(statusRes.data) ? statusRes.data : []);
+      setLicenseTypeChoices(Array.isArray(licenseTypeRes.data) ? licenseTypeRes.data : []);
+    } catch {
+      showSnack('Failed to load form options.', 'error');
+    }
+  }, []);
 
   const fetchAssets = useCallback(async () => {
     setAssetLoading(true);
@@ -113,9 +128,10 @@ function Assets() {
   }, []);
 
   useEffect(() => {
+    fetchChoices();
     fetchAssets();
     fetchLicenses();
-  }, [fetchAssets, fetchLicenses]);
+  }, [fetchChoices, fetchAssets, fetchLicenses]);
 
   // Asset handlers
   const openAddAsset = () => {
@@ -133,7 +149,7 @@ function Assets() {
       vendor: row.vendor || '',
       purchase_date: row.purchase_date || '',
       purchase_cost: row.purchase_cost || '',
-      status: row.status || 'available',
+      status: row.status || '',
       attribute_values: row.attribute_values || {},
     });
     setAssetDialog(true);
@@ -186,7 +202,7 @@ function Assets() {
       vendor: row.vendor || '',
       purchase_date: row.purchase_date || '',
       expiry_date: row.expiry_date || '',
-      license_type: row.license_type || 'perpetual',
+      license_type: row.license_type || '',
       notes: row.notes || '',
     });
     setLicenseDialog(true);
@@ -360,9 +376,9 @@ function Assets() {
                 value={assetForm.asset_type}
                 onChange={(e) => setAssetForm({ ...assetForm, asset_type: e.target.value })}
               >
-                {ASSET_TYPES.map((t) => (
-                  <MenuItem key={t} value={t}>
-                    {t}
+                {assetTypes.map((t) => (
+                  <MenuItem key={t.id} value={t.name}>
+                    {t.name}
                   </MenuItem>
                 ))}
               </TextField>
@@ -419,9 +435,9 @@ function Assets() {
                 value={assetForm.status}
                 onChange={(e) => setAssetForm({ ...assetForm, status: e.target.value })}
               >
-                {Object.keys(ASSET_STATUS_COLORS).map((s) => (
-                  <MenuItem key={s} value={s}>
-                    {s}
+                {statusChoices.map((s) => (
+                  <MenuItem key={s.value} value={s.value}>
+                    {s.label}
                   </MenuItem>
                 ))}
               </TextField>
@@ -502,9 +518,9 @@ function Assets() {
                 value={licenseForm.license_type}
                 onChange={(e) => setLicenseForm({ ...licenseForm, license_type: e.target.value })}
               >
-                {LICENSE_TYPES.map((t) => (
-                  <MenuItem key={t} value={t}>
-                    {t.replace('_', ' ')}
+                {licenseTypeChoices.map((t) => (
+                  <MenuItem key={t.value} value={t.value}>
+                    {t.label}
                   </MenuItem>
                 ))}
               </TextField>

@@ -118,6 +118,35 @@ class AssetViewSet(viewsets.ModelViewSet):
         )
 
 
+class AssetChoicesViewSet(viewsets.ViewSet):
+    """
+    Returns admin-defined choice lists for Asset forms.
+    asset-types: all AssetType records (admin creates/manages via /inventory/asset-types/).
+    status-choices: Asset.STATUS_CHOICES as value/label pairs.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['get'], url_path='asset-type-list')
+    def asset_type_list(self, request):
+        from .serializers import AssetTypeSerializer
+        qs = AssetType.objects.all().order_by('name')
+        return Response(AssetTypeSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=['get'], url_path='status-choices')
+    def status_choices(self, request):
+        return Response([
+            {'value': value, 'label': label}
+            for value, label in Asset.STATUS_CHOICES
+        ])
+
+    @action(detail=False, methods=['get'], url_path='license-type-choices')
+    def license_type_choices(self, request):
+        return Response([
+            {'value': value, 'label': label}
+            for value, label in SoftwareLicense.LICENSE_TYPE_CHOICES
+        ])
+
+
 class SoftwareLicenseViewSet(viewsets.ModelViewSet):
     """
     CRUD for software licences.
