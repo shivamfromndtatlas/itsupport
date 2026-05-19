@@ -24,6 +24,7 @@ class AssetTypeViewSet(viewsets.ModelViewSet):
 
     queryset = AssetType.objects.all()
     serializer_class = AssetTypeSerializer
+    pagination_class = None
 
     def get_permissions(self):
         if self.action in ('create', 'update', 'partial_update', 'destroy'):
@@ -39,6 +40,7 @@ class AssetAttributeViewSet(viewsets.ModelViewSet):
 
     queryset = AssetAttribute.objects.prefetch_related('asset_types').all()
     serializer_class = AssetAttributeSerializer
+    pagination_class = None
 
     def get_permissions(self):
         if self.action in ('create', 'update', 'partial_update', 'destroy'):
