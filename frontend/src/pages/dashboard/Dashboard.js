@@ -11,6 +11,7 @@ import {
 import PeopleIcon from '@mui/icons-material/People';
 import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumber';
 import DevicesIcon from '@mui/icons-material/Devices';
+import LaptopWindowsIcon from '@mui/icons-material/LaptopWindows';
 import PersonAddIcon from '@mui/icons-material/PersonAdd';
 import {
   BarChart,
@@ -64,9 +65,11 @@ function Dashboard() {
     employees: null,
     openTickets: null,
     availableAssets: null,
+    systemsWithMdm: null,
     pendingOnboardings: null,
   });
   const [chartData, setChartData] = useState([]);
+  const [mdmCategoryData, setMdmCategoryData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -89,7 +92,7 @@ function Dashboard() {
 
         if (hasRole('super_admin', 'it_specialist')) {
           requests.push(
-            api.get('/inventory/assets/?status=available').catch(() => ({ data: { count: null, results: [] } }))
+            api.get('/inventory/assets/?status=available&source=portal').catch(() => ({ data: { count: null, results: [] } }))
           );
           requests.push(
             api.get('/onboarding/?status=pending').catch(() => ({ data: { count: null, results: [] } }))
@@ -97,13 +100,17 @@ function Dashboard() {
           requests.push(
             api.get('/inventory/assets/dashboard-stats/').catch(() => ({ data: null }))
           );
+          requests.push(
+            api.get('/integrations/suremdm/summary/').catch(() => ({ data: null }))
+          );
         } else {
           requests.push(Promise.resolve({ data: { count: null } }));
           requests.push(Promise.resolve({ data: { count: null } }));
           requests.push(Promise.resolve({ data: null }));
+          requests.push(Promise.resolve({ data: null }));
         }
 
-        const [empRes, ticketRes, assetRes, onboardRes, dashRes] = await Promise.all(requests);
+        const [empRes, ticketRes, assetRes, onboardRes, dashRes, mdmRes] = await Promise.all(requests);
 
         const empCount =
           empRes.data?.count ?? (Array.isArray(empRes.data) ? empRes.data.length : null);
@@ -118,6 +125,7 @@ function Dashboard() {
           employees: empCount,
           openTickets: ticketCount,
           availableAssets: assetCount,
+          systemsWithMdm: mdmRes.data?.total_systems ?? null,
           pendingOnboardings: onboardCount,
         });
 
@@ -136,6 +144,15 @@ function Dashboard() {
               Object.entries(raw.by_type).map(([name, count]) => ({ name, count }))
             );
           }
+        }
+
+        if (Array.isArray(mdmRes.data?.categories)) {
+          setMdmCategoryData(
+            mdmRes.data.categories.map((item) => ({
+              name: item.category,
+              count: item.count,
+            }))
+          );
         }
       } catch (err) {
         setError('Failed to load dashboard data.');
@@ -205,6 +222,15 @@ function Dashboard() {
             </Grid>
             <Grid item xs={12} sm={6} md={3}>
               <StatCard
+                title="Systems with MDM"
+                value={stats.systemsWithMdm}
+                icon={<LaptopWindowsIcon />}
+                color="info"
+                loading={loading}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6} md={3}>
+              <StatCard
                 title="Pending Onboardings"
                 value={stats.pendingOnboardings}
                 icon={<PersonAddIcon />}
@@ -218,29 +244,58 @@ function Dashboard() {
 
       {/* Bar Chart */}
       {canSeeAssets && (
-        <Card sx={{ borderRadius: 2, boxShadow: 2, p: 2 }}>
-          <Typography variant="h6" fontWeight={600} sx={{ mb: 2, px: 1 }}>
-            Asset Distribution by Type
-          </Typography>
-          {loading ? (
-            <Skeleton variant="rectangular" height={280} />
-          ) : chartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" tick={{ fontSize: 13 }} />
-                <YAxis allowDecimals={false} tick={{ fontSize: 13 }} />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="count" fill="#1565C0" radius={[4, 4, 0, 0]} name="Assets" />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <Box sx={{ textAlign: 'center', py: 6 }}>
-              <Typography color="text.secondary">No asset data available.</Typography>
-            </Box>
-          )}
-        </Card>
+        <Grid container spacing={3}>
+          <Grid item xs={12} lg={6}>
+            <Card sx={{ borderRadius: 2, boxShadow: 2, p: 2, height: '100%' }}>
+              <Typography variant="h6" fontWeight={600} sx={{ mb: 2, px: 1 }}>
+                Asset Distribution by Type
+              </Typography>
+              {loading ? (
+                <Skeleton variant="rectangular" height={280} />
+              ) : chartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" tick={{ fontSize: 13 }} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 13 }} />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="count" fill="#1565C0" radius={[4, 4, 0, 0]} name="Assets" />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <Box sx={{ textAlign: 'center', py: 6 }}>
+                  <Typography color="text.secondary">No asset data available.</Typography>
+                </Box>
+              )}
+            </Card>
+          </Grid>
+          <Grid item xs={12} lg={6}>
+            <Card sx={{ borderRadius: 2, boxShadow: 2, p: 2, height: '100%' }}>
+              <Typography variant="h6" fontWeight={600} sx={{ mb: 2, px: 1 }}>
+                MDM Systems by Category
+              </Typography>
+              {loading ? (
+                <Skeleton variant="rectangular" height={280} />
+              ) : mdmCategoryData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={mdmCategoryData} margin={{ top: 10, right: 30, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" tick={{ fontSize: 13 }} interval={0} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 13 }} />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="count" fill="#00897B" radius={[4, 4, 0, 0]} name="Systems" />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <Box sx={{ textAlign: 'center', py: 6 }}>
+                  <Typography color="text.secondary">No MDM category data available.</Typography>
+                </Box>
+              )}
+            </Card>
+          </Grid>
+        </Grid>
       )}
     </Box>
   );

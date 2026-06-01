@@ -57,6 +57,18 @@ class AssetViewSet(viewsets.ModelViewSet):
 
     queryset = Asset.objects.select_related('asset_type').all()
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        status = self.request.query_params.get('status')
+        source = self.request.query_params.get('source')
+
+        if status:
+            queryset = queryset.filter(status=status)
+        if source == 'portal':
+            queryset = queryset.exclude(vendor='SureMDM').exclude(asset_id__startswith='SUREMDM-')
+
+        return queryset
+
     def get_serializer_class(self):
         if self.action in ('create', 'update', 'partial_update'):
             return AssetCreateSerializer
@@ -75,7 +87,7 @@ class AssetViewSet(viewsets.ModelViewSet):
         Returns a summary of asset counts by status and type,
         top 5 asset types, and a software licence seat summary.
         """
-        assets_qs = Asset.objects.all()
+        assets_qs = Asset.objects.exclude(vendor='SureMDM').exclude(asset_id__startswith='SUREMDM-')
         total = assets_qs.count()
 
         status_counts = {

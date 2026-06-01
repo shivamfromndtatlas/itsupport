@@ -88,10 +88,11 @@ function InventoryDashboard() {
   }, []);
 
   const stats = data?.summary || data || {};
+  const statusCounts = data?.status_counts || data?.summary?.status_counts || {};
   const totalAssets = stats.total_assets ?? stats.total ?? null;
-  const available = stats.available ?? null;
-  const assigned = stats.assigned ?? null;
-  const maintenance = stats.maintenance ?? stats.under_maintenance ?? null;
+  const available = statusCounts.available ?? stats.available ?? null;
+  const assigned = statusCounts.assigned ?? stats.assigned ?? null;
+  const maintenance = statusCounts.maintenance ?? stats.maintenance ?? stats.under_maintenance ?? null;
 
   // Assets by type
   const byTypeRaw = data?.assets_by_type || data?.by_type || [];
@@ -107,7 +108,7 @@ function InventoryDashboard() {
     { name: 'Available', value: available },
     { name: 'Assigned', value: assigned },
     { name: 'Maintenance', value: maintenance },
-  ].filter((d) => d.value != null);
+  ].filter((d) => d.value != null && d.value > 0);
 
   // Software licenses
   const licenses = data?.software_licenses || data?.licenses || [];

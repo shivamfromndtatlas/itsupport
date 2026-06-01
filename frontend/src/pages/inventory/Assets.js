@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Box,
   Tabs,
@@ -18,6 +18,8 @@ import {
   Snackbar,
   Alert,
   Grid,
+  FormControlLabel,
+  Checkbox,
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -32,6 +34,9 @@ const ASSET_STATUS_COLORS = {
   retired: 'default',
 };
 
+const CONDITION_CHOICES = ['Good', 'Fair', 'Poor'];
+const SYSTEM_ASSET_ATTRIBUTE_NAMES = new Set(['asset id', 'asset type', 'status', 'condition']);
+
 const EMPTY_ASSET = {
   asset_type: '',
   asset_id: '',
@@ -39,8 +44,8 @@ const EMPTY_ASSET = {
   vendor: '',
   purchase_date: '',
   purchase_cost: '',
-  status: '',
-  attribute_values: {},
+  status: 'available',
+  attribute_values: { condition: 'Good' },
 };
 
 const EMPTY_LICENSE = {
@@ -80,31 +85,75 @@ function Assets() {
   const [confirmLicense, setConfirmLicense] = useState({ open: false, row: null });
 
   const [assetTypes, setAssetTypes] = useState([]);
-  const [statusChoices, setStatusChoices] = useState([]);
+  const [assetAttributes, setAssetAttributes] = useState([]);
   const [licenseTypeChoices, setLicenseTypeChoices] = useState([]);
+  const [hardwareAssetTypeFilter, setHardwareAssetTypeFilter] = useState([]);
+  const [softwareAssetTypeFilter, setSoftwareAssetTypeFilter] = useState([]);
+  const [selectedHwTypeName, setSelectedHwTypeName] = useState('');
 
   const [snack, setSnack] = useState({ open: false, msg: '', severity: 'success' });
   const showSnack = (msg, severity = 'success') => setSnack({ open: true, msg, severity });
 
+  const hardwareAssetTypeOptions = useMemo(
+    () => assetTypes.filter((type) => type.asset_type === 'hardware'),
+    [assetTypes]
+  );
+  const softwareAssetTypeOptions = useMemo(
+    () => assetTypes.filter((type) => type.asset_type === 'software'),
+    [assetTypes]
+  );
+
+  const filteredAssets = useMemo(() => {
+    let rows = assets;
+    if (hardwareAssetTypeFilter.length) {
+      rows = rows.filter((row) => {
+        const typeName = row.asset_type_name || row.asset_type || '';
+        return hardwareAssetTypeFilter.includes(typeName);
+      });
+    }
+    if (selectedHwTypeName) {
+      rows = rows.filter((row) => {
+        const typeName = row.asset_type_name || row.asset_type || '';
+        return typeName === selectedHwTypeName;
+      });
+    }
+    return rows;
+  }, [assets, hardwareAssetTypeFilter, selectedHwTypeName]);
+
+  const filteredLicenses = useMemo(() => {
+    if (!softwareAssetTypeFilter.length) return licenses;
+    return licenses.filter((row) => {
+      const typeName = row.asset_type_name || row.asset_type || row.license_type || row.software_name || '';
+      return softwareAssetTypeFilter.includes(typeName);
+    });
+  }, [licenses, softwareAssetTypeFilter]);
+
   const fetchChoices = useCallback(async () => {
     try {
-      const [typesRes, statusRes, licenseTypeRes] = await Promise.all([
+      const [typesRes, licenseTypeRes] = await Promise.all([
         api.get('/inventory/asset-types/'),
-        api.get('/inventory/form-choices/status-choices/'),
         api.get('/inventory/form-choices/license-type-choices/'),
       ]);
       setAssetTypes(Array.isArray(typesRes.data) ? typesRes.data : typesRes.data.results || []);
-      setStatusChoices(Array.isArray(statusRes.data) ? statusRes.data : []);
       setLicenseTypeChoices(Array.isArray(licenseTypeRes.data) ? licenseTypeRes.data : []);
     } catch {
       showSnack('Failed to load form options.', 'error');
     }
   }, []);
 
+  const fetchAssetAttributes = useCallback(async () => {
+    try {
+      const res = await api.get('/inventory/asset-attributes/');
+      setAssetAttributes(Array.isArray(res.data) ? res.data : res.data.results || []);
+    } catch {
+      showSnack('Failed to load asset attributes.', 'error');
+    }
+  }, []);
+
   const fetchAssets = useCallback(async () => {
     setAssetLoading(true);
     try {
-      const res = await api.get('/inventory/assets/');
+      const res = await api.get('/inventory/assets/?source=portal');
       const data = Array.isArray(res.data) ? res.data : res.data.results || [];
       setAssets(data.map((a) => ({ ...a, id: a.id || a.asset_id })));
     } catch {
@@ -129,9 +178,130 @@ function Assets() {
 
   useEffect(() => {
     fetchChoices();
+    fetchAssetAttributes();
     fetchAssets();
     fetchLicenses();
-  }, [fetchChoices, fetchAssets, fetchLicenses]);
+  }, [fetchChoices, fetchAssetAttributes, fetchAssets, fetchLicenses]);
+
+  const selectedAssetType = useMemo(
+    () => assetTypes.find((type) => type.name === assetForm.asset_type),
+    [assetForm.asset_type, assetTypes]
+  );
+
+  const configuredAssetAttributes = useMemo(() => {
+    if (!selectedAssetType) return [];
+    return assetAttributes.filter((attr) => {
+      if (SYSTEM_ASSET_ATTRIBUTE_NAMES.has(attr.name.trim().toLowerCase())) {
+        return false;
+      }
+      const linkedTypes = attr.asset_types || [];
+      return (
+        attr.is_common ||
+        linkedTypes.length === 0 ||
+        linkedTypes.map(String).includes(String(selectedAssetType.id))
+      );
+    });
+  }, [assetAttributes, selectedAssetType]);
+
+  const getAttributeKey = (attr) => String(attr.id);
+
+  const getAttributeValue = (attr) => {
+    const values = assetForm.attribute_values || {};
+    return values[getAttributeKey(attr)] ?? values[attr.name] ?? '';
+  };
+
+  const updateAttributeValue = (attr, value) => {
+    setAssetForm((prev) => ({
+      ...prev,
+      attribute_values: {
+        ...(prev.attribute_values || {}),
+        [getAttributeKey(attr)]: value,
+      },
+    }));
+  };
+
+  const getConditionValue = () => assetForm.attribute_values?.condition || 'Good';
+
+  const updateConditionValue = (value) => {
+    setAssetForm((prev) => ({
+      ...prev,
+      attribute_values: {
+        ...(prev.attribute_values || {}),
+        condition: value,
+      },
+    }));
+  };
+
+  const buildAssetPayload = () => {
+    const payload = {
+      asset_type: assetForm.asset_type,
+      asset_id: assetForm.asset_id,
+      serial_number: assetForm.serial_number,
+      vendor: assetForm.vendor,
+      status: assetForm.status || 'available',
+      attribute_values: {
+        ...(assetForm.attribute_values || {}),
+        condition: getConditionValue(),
+      },
+    };
+
+    if (assetForm.purchase_date) {
+      payload.purchase_date = assetForm.purchase_date;
+    }
+    if (assetForm.purchase_cost !== '') {
+      payload.purchase_cost = assetForm.purchase_cost;
+    }
+
+    return payload;
+  };
+
+  const getErrorMessage = (err) => {
+    const data = err.response?.data;
+    if (!data) return 'Save failed.';
+    if (typeof data === 'string') return data;
+    if (data.detail) return data.detail;
+    const firstField = Object.keys(data)[0];
+    const firstValue = data[firstField];
+    const message = Array.isArray(firstValue) ? firstValue.join(' ') : firstValue;
+    return firstField ? `${firstField}: ${message}` : 'Save failed.';
+  };
+
+  const renderAttributeField = (attr) => {
+    const value = getAttributeValue(attr);
+
+    if (attr.field_type === 'boolean') {
+      return (
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={Boolean(value)}
+              onChange={(e) => updateAttributeValue(attr, e.target.checked)}
+            />
+          }
+          label={attr.name}
+        />
+      );
+    }
+
+    return (
+      <TextField
+        select={attr.field_type === 'select'}
+        label={attr.name}
+        type={attr.field_type === 'number' || attr.field_type === 'date' ? attr.field_type : 'text'}
+        fullWidth
+        value={value}
+        onChange={(e) => updateAttributeValue(attr, e.target.value)}
+        InputLabelProps={attr.field_type === 'date' ? { shrink: true } : undefined}
+      >
+        {attr.field_type === 'select' &&
+          (attr.options || []).map((option) => (
+            <MenuItem key={option} value={option}>
+              {option}
+            </MenuItem>
+          ))}
+      </TextField>
+    );
+  };
 
   // Asset handlers
   const openAddAsset = () => {
@@ -143,14 +313,17 @@ function Assets() {
   const openEditAsset = (row) => {
     setEditAsset(row);
     setAssetForm({
-      asset_type: row.asset_type || '',
+      asset_type: row.asset_type_name || row.asset_type || '',
       asset_id: row.asset_id || '',
       serial_number: row.serial_number || '',
       vendor: row.vendor || '',
       purchase_date: row.purchase_date || '',
       purchase_cost: row.purchase_cost || '',
-      status: row.status || '',
-      attribute_values: row.attribute_values || {},
+      status: row.status || 'available',
+      attribute_values: {
+        condition: 'Good',
+        ...(row.attribute_values || {}),
+      },
     });
     setAssetDialog(true);
   };
@@ -158,17 +331,18 @@ function Assets() {
   const handleSaveAsset = async () => {
     setSavingAsset(true);
     try {
+      const payload = buildAssetPayload();
       if (editAsset) {
-        await api.patch(`/inventory/assets/${editAsset.id}/`, assetForm);
+        await api.patch(`/inventory/assets/${editAsset.id}/`, payload);
         showSnack('Asset updated.');
       } else {
-        await api.post('/inventory/assets/', assetForm);
+        await api.post('/inventory/assets/', payload);
         showSnack('Asset added.');
       }
       setAssetDialog(false);
       fetchAssets();
     } catch (err) {
-      showSnack(err.response?.data?.detail || 'Save failed.', 'error');
+      showSnack(getErrorMessage(err), 'error');
     } finally {
       setSavingAsset(false);
     }
@@ -255,8 +429,6 @@ function Assets() {
         />
       ),
     },
-    { field: 'vendor', headerName: 'Vendor', flex: 1 },
-    { field: 'purchase_date', headerName: 'Purchase Date', width: 140 },
     {
       field: 'actions',
       headerName: 'Actions',
@@ -341,23 +513,101 @@ function Assets() {
         </Tabs>
         <Box sx={{ p: 2 }}>
           <TabPanel value={tab} index={0}>
-            <DataTable
-              rows={assets}
-              columns={assetColumns}
-              loading={assetLoading}
-              onAdd={openAddAsset}
-              addLabel="Add Asset"
-              searchable
-            />
+            <Box sx={{ display: 'flex', gap: 2 }}>
+              <Box sx={{ width: 220, borderRight: 1, borderColor: 'divider', pr: 1 }}>
+                <Tabs
+                  orientation="vertical"
+                  value={selectedHwTypeName}
+                  onChange={(_, v) => setSelectedHwTypeName(v)}
+                  sx={{ height: '100%' }}
+                >
+                  <Tab value="" label="All Types" />
+                  {hardwareAssetTypeOptions.map((type) => (
+                    <Tab key={type.id} value={type.name} label={type.name} />
+                  ))}
+                </Tabs>
+              </Box>
+              <Box sx={{ flex: 1 }}>
+                <DataTable
+                  rows={useMemo(() => {
+                    // Map attribute values into fields for dynamic columns
+                    const attrs = assetAttributes || [];
+                    const selectedType = assetTypes.find((t) => t.name === selectedHwTypeName);
+                    const relevantAttrs = selectedType
+                      ? attrs.filter((attr) => {
+                          if (SYSTEM_ASSET_ATTRIBUTE_NAMES.has(attr.name.trim().toLowerCase())) return false;
+                          const linkedTypes = attr.asset_types || [];
+                          return attr.is_common || linkedTypes.length === 0 || linkedTypes.map(String).includes(String(selectedType.id));
+                        })
+                      : [];
+
+                    return filteredAssets.map((row) => {
+                      const values = row.asset_detail?.attribute_values_with_names || row.asset_detail?.attribute_values || row.attribute_values || {};
+                      const mapped = { ...row };
+                      relevantAttrs.forEach((attr) => {
+                        const key = `attr_${attr.id}`;
+                        mapped[key] = values[attr.name] ?? values[String(attr.id)] ?? values[attr.name.toLowerCase()] ?? '';
+                      });
+                      return mapped;
+                    });
+                  }, [filteredAssets, assetAttributes, assetTypes, selectedHwTypeName])}
+                  columns={useMemo(() => {
+                    // Build columns: base + dynamic attribute columns when a type is selected
+                    const base = assetColumns;
+                    if (!selectedHwTypeName) return base;
+                    const selectedType = assetTypes.find((t) => t.name === selectedHwTypeName);
+                    const attrs = assetAttributes || [];
+                    const relevantAttrs = attrs.filter((attr) => {
+                      if (SYSTEM_ASSET_ATTRIBUTE_NAMES.has(attr.name.trim().toLowerCase())) return false;
+                      const linkedTypes = attr.asset_types || [];
+                      return (
+                        attr.is_common ||
+                        linkedTypes.length === 0 ||
+                        linkedTypes.map(String).includes(String(selectedType?.id))
+                      );
+                    });
+                    const attrCols = relevantAttrs.map((attr) => ({
+                      field: `attr_${attr.id}`,
+                      headerName: attr.name,
+                      flex: 1,
+                      minWidth: 120,
+                      renderCell: ({ value }) => value ?? '--',
+                    }));
+                    return [...base.slice(0, base.length - 1), ...attrCols, base[base.length - 1]];
+                  }, [assetColumns, assetAttributes, assetTypes, selectedHwTypeName])}
+                  loading={assetLoading}
+                  onAdd={openAddAsset}
+                  addLabel="Add Asset"
+                  searchable
+                />
+              </Box>
+            </Box>
           </TabPanel>
           <TabPanel value={tab} index={1}>
             <DataTable
-              rows={licenses}
+              rows={filteredLicenses}
               columns={licenseColumns}
               loading={licenseLoading}
               onAdd={openAddLicense}
               addLabel="Add License"
               searchable
+              toolbar={
+                <TextField
+                  select
+                  size="small"
+                  label="Software Asset Type"
+                  value={softwareAssetTypeFilter}
+                  onChange={(e) => setSoftwareAssetTypeFilter(e.target.value)}
+                  SelectProps={{ multiple: true, renderValue: (selected) => (selected.length ? selected.join(', ') : 'All asset types') }}
+                  sx={{ minWidth: 240, maxWidth: 420 }}
+                >
+                  {softwareAssetTypeOptions.map((type) => (
+                    <MenuItem key={type.id} value={type.name}>
+                      {type.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              }
             />
           </TabPanel>
         </Box>
@@ -376,7 +626,7 @@ function Assets() {
                 value={assetForm.asset_type}
                 onChange={(e) => setAssetForm({ ...assetForm, asset_type: e.target.value })}
               >
-                {assetTypes.map((t) => (
+                {hardwareAssetTypeOptions.map((t) => (
                   <MenuItem key={t.id} value={t.name}>
                     {t.name}
                   </MenuItem>
@@ -392,52 +642,29 @@ function Assets() {
                 disabled={!!editAsset}
               />
             </Grid>
-            <Grid item xs={12} sm={6}>
-              <TextField
-                label="Serial Number"
-                fullWidth
-                value={assetForm.serial_number}
-                onChange={(e) => setAssetForm({ ...assetForm, serial_number: e.target.value })}
-              />
-            </Grid>
-            <Grid item xs={12} sm={6}>
-              <TextField
-                label="Vendor"
-                fullWidth
-                value={assetForm.vendor}
-                onChange={(e) => setAssetForm({ ...assetForm, vendor: e.target.value })}
-              />
-            </Grid>
-            <Grid item xs={12} sm={6}>
-              <TextField
-                label="Purchase Date"
-                type="date"
-                fullWidth
-                value={assetForm.purchase_date}
-                onChange={(e) => setAssetForm({ ...assetForm, purchase_date: e.target.value })}
-                InputLabelProps={{ shrink: true }}
-              />
-            </Grid>
-            <Grid item xs={12} sm={6}>
-              <TextField
-                label="Purchase Cost"
-                type="number"
-                fullWidth
-                value={assetForm.purchase_cost}
-                onChange={(e) => setAssetForm({ ...assetForm, purchase_cost: e.target.value })}
-              />
-            </Grid>
+            {assetForm.asset_type && configuredAssetAttributes.length === 0 && (
+              <Grid item xs={12}>
+                <Typography variant="body2" color="text.secondary">
+                  No attributes are configured for this asset type.
+                </Typography>
+              </Grid>
+            )}
+            {configuredAssetAttributes.map((attr) => (
+              <Grid item xs={12} sm={attr.field_type === 'boolean' ? 12 : 6} key={attr.id}>
+                {renderAttributeField(attr)}
+              </Grid>
+            ))}
             <Grid item xs={12} sm={6}>
               <TextField
                 select
-                label="Status"
+                label="Condition"
                 fullWidth
-                value={assetForm.status}
-                onChange={(e) => setAssetForm({ ...assetForm, status: e.target.value })}
+                value={getConditionValue()}
+                onChange={(e) => updateConditionValue(e.target.value)}
               >
-                {statusChoices.map((s) => (
-                  <MenuItem key={s.value} value={s.value}>
-                    {s.label}
+                {CONDITION_CHOICES.map((condition) => (
+                  <MenuItem key={condition} value={condition}>
+                    {condition}
                   </MenuItem>
                 ))}
               </TextField>

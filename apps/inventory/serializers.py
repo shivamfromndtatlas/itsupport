@@ -23,6 +23,7 @@ class AssetAttributeSerializer(serializers.ModelSerializer):
 
 class AssetSerializer(serializers.ModelSerializer):
     asset_type_name = serializers.CharField(source='asset_type.name', read_only=True)
+    attribute_values_with_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Asset
@@ -30,9 +31,44 @@ class AssetSerializer(serializers.ModelSerializer):
             'id', 'asset_id', 'asset_type', 'asset_type_name',
             'serial_number', 'status', 'purchase_date', 'purchase_cost',
             'warranty_expiry', 'vendor', 'notes', 'attribute_values',
+            'attribute_values_with_names',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_attribute_values_with_names(self, obj):
+        """
+        Returns attribute_values with both numeric IDs and attribute names as keys
+        for easier access in the frontend.
+        """
+        from apps.inventory.models import AssetAttribute
+        
+        result = dict(obj.attribute_values or {})
+        
+        # Get all attributes - both linked to asset type and common attributes
+        try:
+            if obj.asset_type:
+                # Get attributes linked to this asset type
+                linked_attrs = obj.asset_type.attributes.all()
+                # Also get common attributes
+                common_attrs = AssetAttribute.objects.filter(is_common=True)
+                # Combine them
+                all_attrs = set(linked_attrs) | set(common_attrs)
+                
+                for attr in all_attrs:
+                    # Try both integer and string keys since JSON can have either
+                    attr_id_int = attr.id
+                    attr_id_str = str(attr.id)
+                    
+                    # Check for the attribute value using both int and string keys
+                    if attr_id_int in result:
+                        result[attr.name] = result[attr_id_int]
+                    elif attr_id_str in result:
+                        result[attr.name] = result[attr_id_str]
+        except Exception:
+            pass
+        
+        return result
 
 
 class AssetCreateSerializer(serializers.Serializer):

@@ -24,6 +24,19 @@ class NewJoinerRequestViewSet(viewsets.ModelViewSet):
     ).all()
     serializer_class = NewJoinerRequestSerializer
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        status_filter = self.request.query_params.get('status')
+
+        if status_filter:
+            valid_statuses = {choice[0] for choice in NewJoinerRequest.STATUS_CHOICES}
+            if status_filter in valid_statuses:
+                queryset = queryset.filter(status=status_filter)
+            else:
+                queryset = queryset.none()
+
+        return queryset
+
     def get_permissions(self):
         if self.action == 'create':
             return [IsHROrSuperAdmin()]
@@ -72,7 +85,8 @@ class NewJoinerRequestViewSet(viewsets.ModelViewSet):
             alias_name=onboarding_request.alias_name,
             official_email=onboarding_request.personal_email,
             contact_number=onboarding_request.contact_number,
-            core_process=onboarding_request.core_process,
+            core_process_code=onboarding_request.core_process,
+            core_process_name=CORE_PROCESS_MAP.get(onboarding_request.core_process, ''),
             designation=onboarding_request.designation,
             date_of_joining=onboarding_request.date_of_joining,
         )

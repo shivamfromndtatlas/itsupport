@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     'apps.inventory',
     'apps.allocation',
     'apps.tickets',
+    'apps.integrations',
 ]
 
 MIDDLEWARE = [

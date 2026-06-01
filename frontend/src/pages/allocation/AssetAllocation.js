@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Box,
   Tabs,
@@ -67,22 +67,45 @@ function AssetAllocation() {
   const [employees, setEmployees] = useState([]);
   const [availableAssets, setAvailableAssets] = useState([]);
   const [availableLicenses, setAvailableLicenses] = useState([]);
+  const [assetTypes, setAssetTypes] = useState([]);
+  const [assetTypeFilter, setAssetTypeFilter] = useState([]);
+
+  const assetTypeOptions = useMemo(() => {
+    const filterKey = tab === 0 ? 'hardware' : 'software';
+    return assetTypes.filter((type) => type.asset_type === filterKey);
+  }, [assetTypes, tab]);
 
   const [snack, setSnack] = useState({ open: false, msg: '', severity: 'success' });
   const qrRef = useRef();
 
   const showSnack = (msg, severity = 'success') => setSnack({ open: true, msg, severity });
 
+  const formatAssetLabel = (asset) => {
+    if (!asset) return '';
+    const values = asset.attribute_values || {};
+    const make = values.make || values.Make || values.make_name || values.MakeName || '';
+    const model = values.model || values.Model || values.model_name || values.ModelName || '';
+    const typeName = asset.asset_type_name || asset.asset_type || '';
+    const details = [make, model].filter(Boolean).join(' - ');
+    if (details && typeName) {
+      return `${asset.asset_id} (${details} • ${typeName})`;
+    }
+    if (details) return `${asset.asset_id} (${details})`;
+    if (typeName) return `${asset.asset_id} (${typeName})`;
+    return asset.asset_id;
+  };
+
   const fetchAll = useCallback(async () => {
     setHwLoading(true);
     setSwLoading(true);
     try {
-      const [hwRes, swRes, empRes, assetRes, licRes] = await Promise.all([
+      const [hwRes, swRes, empRes, assetRes, licRes, typeRes] = await Promise.all([
         api.get('/allocation/assets/').catch(() => ({ data: [] })),
         api.get('/allocation/licenses/').catch(() => ({ data: [] })),
         api.get('/employees/').catch(() => ({ data: [] })),
-        api.get('/inventory/assets/?status=available').catch(() => ({ data: [] })),
+        api.get('/inventory/assets/?status=available&source=portal').catch(() => ({ data: [] })),
         api.get('/inventory/software-licenses/').catch(() => ({ data: [] })),
+        api.get('/inventory/asset-types/').catch(() => ({ data: [] })),
       ]);
 
       const hw = Array.isArray(hwRes.data) ? hwRes.data : hwRes.data.results || [];
@@ -96,6 +119,8 @@ function AssetAllocation() {
       setEmployees(emp.map((e) => ({ ...e, id: e.id || e.pk })));
       setAvailableAssets(assets.map((a) => ({ ...a, id: a.id || a.pk })));
       setAvailableLicenses(lics.map((l) => ({ ...l, id: l.id || l.pk })));
+      const types = Array.isArray(typeRes.data) ? typeRes.data : typeRes.data.results || [];
+      setAssetTypes(types.map((t) => ({ ...t, id: t.id || t.pk })));
     } catch {
       showSnack('Failed to load data.', 'error');
     } finally {
@@ -192,32 +217,75 @@ function AssetAllocation() {
     printWindow.document.close();
   };
 
+  const findAttributeValue = (attributes, searchTerms) => {
+    if (!attributes) return '--';
+    for (const term of searchTerms) {
+      if (attributes[term]) return attributes[term];
+    }
+    return '--';
+  };
+
   const hwColumns = [
     {
       field: 'asset_detail',
-      headerName: 'Asset',
-      flex: 1,
+      headerName: 'Asset IDs',
+      flex: 0.8,
       renderCell: ({ row }) => row.asset_detail?.asset_id || row.asset_id || row.asset || '--',
     },
     {
+      field: 'asset_type',
+      headerName: 'Asset Type',
+      flex: 0.8,
+      renderCell: ({ row }) => row.asset_detail?.asset_type_name || row.asset_detail?.asset_type || '--',
+    },
+    {
+      field: 'brand_name',
+      headerName: 'Brand Name',
+      flex: 0.8,
+      renderCell: ({ row }) => {
+        const values = row.asset_detail?.attribute_values_with_names || row.asset_detail?.attribute_values || {};
+        return findAttributeValue(values, ['Brand', 'brand', 'Make', 'make', 'Manufacturer', 'manufacturer']);
+      },
+    },
+    {
+      field: 'model',
+      headerName: 'Model',
+      flex: 0.8,
+      renderCell: ({ row }) => {
+        const values = row.asset_detail?.attribute_values_with_names || row.asset_detail?.attribute_values || {};
+        return findAttributeValue(values, ['Model', 'model']);
+      },
+    },
+    {
       field: 'employee_detail',
-      headerName: 'Employee',
+      headerName: 'Employee Name',
       flex: 1,
       renderCell: ({ row }) => row.employee_detail?.full_name || row.employee_name || row.employee || '--',
     },
     { field: 'assigned_date', headerName: 'Assigned Date', width: 140 },
     {
       field: 'status',
-      headerName: 'Status',
-      width: 120,
-      renderCell: ({ value }) => (
-        <Chip
-          label={value || 'active'}
-          color={value === 'recovered' ? 'default' : 'primary'}
-          size="small"
-          sx={{ textTransform: 'capitalize' }}
-        />
-      ),
+      headerName: 'Asset Condition',
+      width: 140,
+      renderCell: ({ row }) => {
+        const attrValues = row.asset_detail?.attribute_values_with_names || row.asset_detail?.attribute_values || {};
+        const condition = attrValues.condition || attrValues.Condition || 'Active';
+        const colorMap = {
+          'Good': 'success',
+          'Fair': 'warning',
+          'Poor': 'error',
+          'Active': 'primary',
+          'Recovered': 'default',
+        };
+        return (
+          <Chip
+            label={condition}
+            color={colorMap[condition] || 'default'}
+            size="small"
+            sx={{ textTransform: 'capitalize' }}
+          />
+        );
+      },
     },
     {
       field: 'actions',
@@ -288,6 +356,14 @@ function AssetAllocation() {
     },
   ];
 
+  const filteredHwAllocations = useMemo(() => {
+    if (!assetTypeFilter.length) return hwAllocations;
+    return hwAllocations.filter((row) => {
+      const typeName = row.asset_detail?.asset_type_name || row.asset_detail?.asset_type || '';
+      return assetTypeFilter.includes(typeName);
+    });
+  }, [hwAllocations, assetTypeFilter]);
+
   return (
     <Box>
       <Typography variant="h6" fontWeight={600} sx={{ mb: 2 }}>
@@ -296,7 +372,10 @@ function AssetAllocation() {
       <Paper sx={{ borderRadius: 2 }}>
         <Tabs
           value={tab}
-          onChange={(_, v) => setTab(v)}
+          onChange={(_, v) => {
+            setTab(v);
+            setAssetTypeFilter([]);
+          }}
           sx={{ borderBottom: 1, borderColor: 'divider', px: 2 }}
         >
           <Tab label="Hardware Allocation" />
@@ -305,12 +384,29 @@ function AssetAllocation() {
         <Box sx={{ p: 2 }}>
           <TabPanel value={tab} index={0}>
             <DataTable
-              rows={hwAllocations}
+              rows={filteredHwAllocations}
               columns={hwColumns}
               loading={hwLoading}
               onAdd={() => { setHwForm(EMPTY_HW_FORM); setHwDialog(true); }}
               addLabel="Assign Asset"
               searchable
+              toolbar={
+                <TextField
+                  select
+                  size="small"
+                  label="Hardware Asset Type"
+                  value={assetTypeFilter}
+                  onChange={(e) => setAssetTypeFilter(e.target.value)}
+                  SelectProps={{ multiple: true, renderValue: (selected) => (selected.length ? selected.join(', ') : 'All asset types') }}
+                  sx={{ minWidth: 240, maxWidth: 420 }}
+                >
+                  {assetTypeOptions.map((type) => (
+                    <MenuItem key={type.id} value={type.name}>
+                      {type.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              }
             />
           </TabPanel>
           <TabPanel value={tab} index={1}>
@@ -321,6 +417,23 @@ function AssetAllocation() {
               onAdd={() => { setSwForm(EMPTY_SW_FORM); setSwDialog(true); }}
               addLabel="Assign License"
               searchable
+              toolbar={
+                <TextField
+                  select
+                  size="small"
+                  label="Software Asset Type"
+                  value={assetTypeFilter}
+                  onChange={(e) => setAssetTypeFilter(e.target.value)}
+                  SelectProps={{ multiple: true, renderValue: (selected) => (selected.length ? selected.join(', ') : 'All asset types') }}
+                  sx={{ minWidth: 240, maxWidth: 420 }}
+                >
+                  {assetTypeOptions.map((type) => (
+                    <MenuItem key={type.id} value={type.name}>
+                      {type.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              }
             />
           </TabPanel>
         </Box>
@@ -356,7 +469,7 @@ function AssetAllocation() {
               >
                 {availableAssets.map((a) => (
                   <MenuItem key={a.id} value={a.id}>
-                    {a.asset_id} – {a.asset_type} ({a.vendor || 'N/A'})
+                    {formatAssetLabel(a)}
                   </MenuItem>
                 ))}
               </TextField>

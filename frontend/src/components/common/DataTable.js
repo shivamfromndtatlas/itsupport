@@ -18,6 +18,7 @@ function DataTable({
   addLabel = 'Add',
   title,
   searchable = false,
+  toolbar,
   pageSize = 10,
   ...rest
 }) {
@@ -52,6 +53,7 @@ function DataTable({
               {title}
             </Typography>
           )}
+          {toolbar}
           {searchable && (
             <TextField
               size="small"

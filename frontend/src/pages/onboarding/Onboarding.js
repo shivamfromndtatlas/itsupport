@@ -136,8 +136,9 @@ function Onboarding() {
   const handleStatusChange = async () => {
     const { row, action } = confirmDialog;
     try {
-      await api.patch(`/onboarding/${row.id}/`, { status: action });
-      showSnack(`Request ${action}.`);
+      const endpoint = action === 'confirmed' ? 'confirm' : 'reject';
+      const res = await api.post(`/onboarding/${row.id}/${endpoint}/`);
+      showSnack(res.data?.detail || `Request ${action}.`);
       fetchRequests();
     } catch {
       showSnack('Action failed.', 'error');
