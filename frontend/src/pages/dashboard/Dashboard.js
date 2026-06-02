@@ -20,147 +20,138 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer,
+  Cell,
 } from 'recharts';
 import api from '../../api/axios';
 import { useAuth } from '../../context/AuthContext';
 
+const STAT_COLORS = {
+  primary:  { bg: 'rgba(79,70,229,0.08)',  icon: '#4F46E5', bar: '#4F46E5' },
+  error:    { bg: 'rgba(239,68,68,0.08)',  icon: '#EF4444', bar: '#EF4444' },
+  success:  { bg: 'rgba(16,185,129,0.08)', icon: '#10B981', bar: '#10B981' },
+  info:     { bg: 'rgba(14,165,233,0.08)', icon: '#0EA5E9', bar: '#0EA5E9' },
+  warning:  { bg: 'rgba(245,158,11,0.08)', icon: '#F59E0B', bar: '#F59E0B' },
+};
+
+const BAR_PALETTE = ['#4F46E5', '#7C3AED', '#0EA5E9', '#10B981', '#F59E0B', '#EF4444', '#EC4899', '#8B5CF6'];
+
 function StatCard({ title, value, icon, color, loading }) {
+  const colors = STAT_COLORS[color] || STAT_COLORS.primary;
   return (
-    <Card sx={{ borderRadius: 2, boxShadow: 2, height: '100%' }}>
-      <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 3 }}>
-        <Box
-          sx={{
-            bgcolor: `${color}.light`,
-            borderRadius: 2,
-            p: 1.5,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          {React.cloneElement(icon, { sx: { fontSize: 32, color: `${color}.main` } })}
-        </Box>
-        <Box>
-          <Typography variant="body2" color="text.secondary" fontWeight={500}>
-            {title}
-          </Typography>
-          {loading ? (
-            <Skeleton width={60} height={36} />
-          ) : (
-            <Typography variant="h4" fontWeight={700}>
-              {value ?? '--'}
+    <Card sx={{ height: '100%' }}>
+      <CardContent sx={{ p: 2.5, '&:last-child': { pb: 2.5 } }}>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+          <Box>
+            <Typography variant="body2" color="text.secondary" fontWeight={500} sx={{ fontSize: 13, mb: 1 }}>
+              {title}
             </Typography>
-          )}
+            {loading ? (
+              <Skeleton width={56} height={40} />
+            ) : (
+              <Typography sx={{ fontSize: 32, fontWeight: 800, color: 'text.primary', lineHeight: 1 }}>
+                {value ?? '--'}
+              </Typography>
+            )}
+          </Box>
+          <Box
+            sx={{
+              bgcolor: colors.bg,
+              borderRadius: '12px',
+              p: 1.25,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+            }}
+          >
+            {React.cloneElement(icon, { sx: { fontSize: 26, color: colors.icon } })}
+          </Box>
         </Box>
       </CardContent>
     </Card>
   );
 }
 
+const CustomTooltip = ({ active, payload, label }) => {
+  if (active && payload && payload.length) {
+    return (
+      <Box sx={{
+        bgcolor: '#0F172A',
+        borderRadius: '8px',
+        px: 1.5, py: 1,
+        boxShadow: '0 10px 25px rgba(0,0,0,0.25)',
+      }}>
+        <Typography sx={{ color: '#94A3B8', fontSize: 11, mb: 0.25 }}>{label}</Typography>
+        <Typography sx={{ color: '#F8FAFC', fontWeight: 700, fontSize: 16 }}>
+          {payload[0].value}
+        </Typography>
+      </Box>
+    );
+  }
+  return null;
+};
+
 function Dashboard() {
   const { user, hasRole } = useAuth();
-  const [stats, setStats] = useState({
-    employees: null,
-    openTickets: null,
-    availableAssets: null,
-    systemsWithMdm: null,
-    pendingOnboardings: null,
-  });
+  const [stats, setStats] = useState({ employees: null, openTickets: null, availableAssets: null, systemsWithMdm: null, pendingOnboardings: null });
   const [chartData, setChartData] = useState([]);
   const [mdmCategoryData, setMdmCategoryData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   const userName = user?.full_name || user?.email || 'User';
-  const roleName = (user?.role || '').replace('_', ' ');
+  const firstName = userName.split(' ')[0];
+  const roleName = (user?.role || '').replace(/_/g, ' ');
 
   useEffect(() => {
     const fetchAll = async () => {
       setLoading(true);
       try {
         const requests = [];
-
         if (hasRole('super_admin', 'hr', 'it_specialist')) {
           requests.push(api.get('/employees/').catch(() => ({ data: { count: null, results: [] } })));
         } else {
           requests.push(Promise.resolve({ data: { count: null } }));
         }
-
         requests.push(api.get('/tickets/?status=open').catch(() => ({ data: { count: null, results: [] } })));
-
         if (hasRole('super_admin', 'it_specialist')) {
-          requests.push(
-            api.get('/inventory/assets/?status=available&source=portal').catch(() => ({ data: { count: null, results: [] } }))
-          );
-          requests.push(
-            api.get('/onboarding/?status=pending').catch(() => ({ data: { count: null, results: [] } }))
-          );
-          requests.push(
-            api.get('/inventory/assets/dashboard-stats/').catch(() => ({ data: null }))
-          );
-          requests.push(
-            api.get('/integrations/suremdm/summary/').catch(() => ({ data: null }))
-          );
+          requests.push(api.get('/inventory/assets/?status=available&source=portal').catch(() => ({ data: { count: null } })));
+          requests.push(api.get('/onboarding/?status=pending').catch(() => ({ data: { count: null } })));
+          requests.push(api.get('/inventory/assets/dashboard-stats/').catch(() => ({ data: null })));
+          requests.push(api.get('/integrations/suremdm/summary/').catch(() => ({ data: null })));
         } else {
-          requests.push(Promise.resolve({ data: { count: null } }));
-          requests.push(Promise.resolve({ data: { count: null } }));
-          requests.push(Promise.resolve({ data: null }));
-          requests.push(Promise.resolve({ data: null }));
+          requests.push(...[null, null, null, null].map(() => Promise.resolve({ data: null })));
         }
 
         const [empRes, ticketRes, assetRes, onboardRes, dashRes, mdmRes] = await Promise.all(requests);
 
-        const empCount =
-          empRes.data?.count ?? (Array.isArray(empRes.data) ? empRes.data.length : null);
-        const ticketCount =
-          ticketRes.data?.count ?? (Array.isArray(ticketRes.data) ? ticketRes.data.length : null);
-        const assetCount =
-          assetRes.data?.count ?? (Array.isArray(assetRes.data) ? assetRes.data.length : null);
-        const onboardCount =
-          onboardRes.data?.count ?? (Array.isArray(onboardRes.data) ? onboardRes.data.length : null);
-
         setStats({
-          employees: empCount,
-          openTickets: ticketCount,
-          availableAssets: assetCount,
-          systemsWithMdm: mdmRes.data?.total_systems ?? null,
-          pendingOnboardings: onboardCount,
+          employees: empRes.data?.count ?? (Array.isArray(empRes.data) ? empRes.data.length : null),
+          openTickets: ticketRes.data?.count ?? (Array.isArray(ticketRes.data) ? ticketRes.data.length : null),
+          availableAssets: assetRes.data?.count ?? (Array.isArray(assetRes.data) ? assetRes.data.length : null),
+          systemsWithMdm: mdmRes?.data?.total_systems ?? null,
+          pendingOnboardings: onboardRes.data?.count ?? (Array.isArray(onboardRes.data) ? onboardRes.data.length : null),
         });
 
-        // Parse chart data
-        if (dashRes.data) {
+        if (dashRes?.data) {
           const raw = dashRes.data;
           if (Array.isArray(raw.assets_by_type)) {
-            setChartData(
-              raw.assets_by_type.map((item) => ({
-                name: item.asset_type || item.name || item.type,
-                count: item.count || item.total,
-              }))
-            );
+            setChartData(raw.assets_by_type.map((i) => ({ name: i.asset_type || i.name || i.type, count: i.count || i.total })));
           } else if (raw.by_type) {
-            setChartData(
-              Object.entries(raw.by_type).map(([name, count]) => ({ name, count }))
-            );
+            setChartData(Object.entries(raw.by_type).map(([name, count]) => ({ name, count })));
           }
         }
 
-        if (Array.isArray(mdmRes.data?.categories)) {
-          setMdmCategoryData(
-            mdmRes.data.categories.map((item) => ({
-              name: item.category,
-              count: item.count,
-            }))
-          );
+        if (Array.isArray(mdmRes?.data?.categories)) {
+          setMdmCategoryData(mdmRes.data.categories.map((i) => ({ name: i.category, count: i.count })));
         }
-      } catch (err) {
+      } catch {
         setError('Failed to load dashboard data.');
       } finally {
         setLoading(false);
       }
     };
-
     fetchAll();
   }, [hasRole]);
 
@@ -169,128 +160,126 @@ function Dashboard() {
 
   return (
     <Box>
-      {/* Welcome */}
-      <Card sx={{ mb: 3, borderRadius: 2, bgcolor: 'primary.main', color: 'white' }}>
-        <CardContent sx={{ p: 3 }}>
-          <Typography variant="h5" fontWeight={700}>
-            Welcome back, {userName}!
-          </Typography>
-          <Typography variant="body2" sx={{ opacity: 0.85, textTransform: 'capitalize', mt: 0.5 }}>
-            Role: {roleName}
-          </Typography>
-        </CardContent>
-      </Card>
+      {/* Welcome banner */}
+      <Box
+        sx={{
+          mb: 3,
+          p: 3,
+          borderRadius: '16px',
+          background: 'linear-gradient(135deg, #0F172A 0%, #1E1B4B 50%, #312E81 100%)',
+          position: 'relative',
+          overflow: 'hidden',
+        }}
+      >
+        <Box sx={{
+          position: 'absolute', top: -40, right: -40,
+          width: 200, height: 200, borderRadius: '50%',
+          background: 'rgba(99,102,241,0.15)',
+          pointerEvents: 'none',
+        }} />
+        <Box sx={{
+          position: 'absolute', bottom: -30, right: 80,
+          width: 130, height: 130, borderRadius: '50%',
+          background: 'rgba(124,58,237,0.12)',
+          pointerEvents: 'none',
+        }} />
+        <Typography sx={{ color: '#F8FAFC', fontWeight: 800, fontSize: { xs: 20, md: 24 }, mb: 0.5 }}>
+          Good day, {firstName}!
+        </Typography>
+        <Typography sx={{ color: '#94A3B8', fontSize: 14, textTransform: 'capitalize' }}>
+          {roleName} — here's what's happening today
+        </Typography>
+      </Box>
 
-      {error && (
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          {error}
-        </Alert>
-      )}
+      {error && <Alert severity="warning" sx={{ mb: 2.5 }}>{error}</Alert>}
 
       {/* Stat Cards */}
-      <Grid container spacing={3} sx={{ mb: 4 }}>
+      <Grid container spacing={2.5} sx={{ mb: 3 }}>
         {canSeeEmployees && (
           <Grid item xs={12} sm={6} md={3}>
-            <StatCard
-              title="Total Employees"
-              value={stats.employees}
-              icon={<PeopleIcon />}
-              color="primary"
-              loading={loading}
-            />
+            <StatCard title="Total Employees" value={stats.employees} icon={<PeopleIcon />} color="primary" loading={loading} />
           </Grid>
         )}
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard
-            title="Open Tickets"
-            value={stats.openTickets}
-            icon={<ConfirmationNumberIcon />}
-            color="error"
-            loading={loading}
-          />
+        <Grid item xs={12} sm={6} md={canSeeEmployees ? 3 : 4}>
+          <StatCard title="Open Tickets" value={stats.openTickets} icon={<ConfirmationNumberIcon />} color="error" loading={loading} />
         </Grid>
         {canSeeAssets && (
           <>
             <Grid item xs={12} sm={6} md={3}>
-              <StatCard
-                title="Available Assets"
-                value={stats.availableAssets}
-                icon={<DevicesIcon />}
-                color="success"
-                loading={loading}
-              />
+              <StatCard title="Available Assets" value={stats.availableAssets} icon={<DevicesIcon />} color="success" loading={loading} />
             </Grid>
             <Grid item xs={12} sm={6} md={3}>
-              <StatCard
-                title="Systems with MDM"
-                value={stats.systemsWithMdm}
-                icon={<LaptopWindowsIcon />}
-                color="info"
-                loading={loading}
-              />
+              <StatCard title="MDM Systems" value={stats.systemsWithMdm} icon={<LaptopWindowsIcon />} color="info" loading={loading} />
             </Grid>
             <Grid item xs={12} sm={6} md={3}>
-              <StatCard
-                title="Pending Onboardings"
-                value={stats.pendingOnboardings}
-                icon={<PersonAddIcon />}
-                color="warning"
-                loading={loading}
-              />
+              <StatCard title="Pending Onboardings" value={stats.pendingOnboardings} icon={<PersonAddIcon />} color="warning" loading={loading} />
             </Grid>
           </>
         )}
       </Grid>
 
-      {/* Bar Chart */}
+      {/* Charts */}
       {canSeeAssets && (
-        <Grid container spacing={3}>
+        <Grid container spacing={2.5}>
           <Grid item xs={12} lg={6}>
-            <Card sx={{ borderRadius: 2, boxShadow: 2, p: 2, height: '100%' }}>
-              <Typography variant="h6" fontWeight={600} sx={{ mb: 2, px: 1 }}>
+            <Card sx={{ p: 2.5 }}>
+              <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5 }}>
                 Asset Distribution by Type
               </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5, fontSize: 13 }}>
+                Breakdown of hardware & software assets
+              </Typography>
               {loading ? (
-                <Skeleton variant="rectangular" height={280} />
+                <Skeleton variant="rectangular" height={260} sx={{ borderRadius: 2 }} />
               ) : chartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" tick={{ fontSize: 13 }} />
-                    <YAxis allowDecimals={false} tick={{ fontSize: 13 }} />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="count" fill="#1565C0" radius={[4, 4, 0, 0]} name="Assets" />
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={chartData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }} barSize={28}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#94A3B8' }} axisLine={false} tickLine={false} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: '#94A3B8' }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(79,70,229,0.04)' }} />
+                    <Bar dataKey="count" radius={[6, 6, 0, 0]} name="Assets">
+                      {chartData.map((_, i) => (
+                        <Cell key={i} fill={BAR_PALETTE[i % BAR_PALETTE.length]} />
+                      ))}
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
                 <Box sx={{ textAlign: 'center', py: 6 }}>
-                  <Typography color="text.secondary">No asset data available.</Typography>
+                  <Typography color="text.secondary" fontSize={14}>No asset data available.</Typography>
                 </Box>
               )}
             </Card>
           </Grid>
+
           <Grid item xs={12} lg={6}>
-            <Card sx={{ borderRadius: 2, boxShadow: 2, p: 2, height: '100%' }}>
-              <Typography variant="h6" fontWeight={600} sx={{ mb: 2, px: 1 }}>
+            <Card sx={{ p: 2.5 }}>
+              <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5 }}>
                 MDM Systems by Category
               </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5, fontSize: 13 }}>
+                Device enrollment by OS category
+              </Typography>
               {loading ? (
-                <Skeleton variant="rectangular" height={280} />
+                <Skeleton variant="rectangular" height={260} sx={{ borderRadius: 2 }} />
               ) : mdmCategoryData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={mdmCategoryData} margin={{ top: 10, right: 30, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" tick={{ fontSize: 13 }} interval={0} />
-                    <YAxis allowDecimals={false} tick={{ fontSize: 13 }} />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="count" fill="#00897B" radius={[4, 4, 0, 0]} name="Systems" />
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={mdmCategoryData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }} barSize={28}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#94A3B8' }} axisLine={false} tickLine={false} interval={0} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: '#94A3B8' }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(14,165,233,0.04)' }} />
+                    <Bar dataKey="count" radius={[6, 6, 0, 0]} name="Systems">
+                      {mdmCategoryData.map((_, i) => (
+                        <Cell key={i} fill={BAR_PALETTE[(i + 2) % BAR_PALETTE.length]} />
+                      ))}
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
                 <Box sx={{ textAlign: 'center', py: 6 }}>
-                  <Typography color="text.secondary">No MDM category data available.</Typography>
+                  <Typography color="text.secondary" fontSize={14}>No MDM category data available.</Typography>
                 </Box>
               )}
             </Card>

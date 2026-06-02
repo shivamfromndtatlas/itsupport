@@ -28,6 +28,8 @@ import {
   Avatar,
   Tooltip,
   LinearProgress,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -65,12 +67,15 @@ const EMPTY_SOP_FORM = { name: '', category: '', description: '', steps: [{ ...E
 
 function SOPManagement() {
   const { hasRole } = useAuth();
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const canCreate = hasRole('super_admin', 'it_specialist');
 
   const [sops, setSops] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [sopForm, setSopForm] = useState(EMPTY_SOP_FORM);
   const [saving, setSaving] = useState(false);
@@ -92,6 +97,20 @@ function SOPManagement() {
       showSnack('Failed to load SOPs.', 'error');
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const handleSelectSOP = useCallback(async (sop) => {
+    // Optimistically show the SOP with whatever data we have
+    setSelected(sop);
+    setLoadingDetail(true);
+    try {
+      const res = await api.get(`/sop/${sop.id}/`);
+      setSelected(res.data);
+    } catch {
+      // Keep the summary data if detail fetch fails
+    } finally {
+      setLoadingDetail(false);
     }
   }, []);
 
@@ -211,10 +230,10 @@ function SOPManagement() {
         )}
       </Box>
 
-      <Grid container spacing={2} sx={{ flex: 1, overflow: 'hidden' }}>
+      <Grid container spacing={2} sx={{ flex: 1, minHeight: 0, gridAutoRows: { xs: 'auto', md: '1fr' } }}>
         {/* ── Left Panel ── */}
-        <Grid item xs={12} md={4} sx={{ height: '100%' }}>
-          <Paper sx={{ height: '100%', display: 'flex', flexDirection: 'column', borderRadius: 2, overflow: 'hidden' }}>
+        <Grid item xs={12} md={4} sx={{ height: { md: '100%' }, display: 'flex', flexDirection: 'column' }}>
+          <Paper sx={{ flex: 1, display: 'flex', flexDirection: 'column', borderRadius: 2, overflow: 'hidden' }}>
             {/* Search */}
             <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
               <TextField
@@ -283,7 +302,7 @@ function SOPManagement() {
                           <ListItemButton
                             key={sop.id}
                             selected={isActive}
-                            onClick={() => setSelected(sop)}
+                            onClick={() => handleSelectSOP(sop)}
                             sx={{
                               borderRadius: 1.5,
                               mb: 0.5,
@@ -329,10 +348,20 @@ function SOPManagement() {
         </Grid>
 
         {/* ── Right Panel ── */}
-        <Grid item xs={12} md={8} sx={{ height: '100%' }}>
-          <Paper sx={{ height: '100%', overflow: 'auto', borderRadius: 2 }}>
-            {!selected ? (
-              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 2 }}>
+        <Grid item xs={12} md={8} sx={{ height: { md: '100%' }, display: 'flex', flexDirection: 'column' }}>
+          <Paper sx={{ flex: 1, overflow: 'auto', borderRadius: 2, minHeight: 300 }}>
+            {loadingDetail ? (
+              <Box sx={{ p: 3 }}>
+                <LinearProgress sx={{ borderRadius: 2, mb: 3 }} />
+                {[1, 2, 3].map((i) => (
+                  <Box key={i} sx={{ mb: 2 }}>
+                    <Box sx={{ height: 16, bgcolor: 'grey.100', borderRadius: 1, mb: 1, width: `${60 + i * 10}%` }} />
+                    <Box sx={{ height: 12, bgcolor: 'grey.50', borderRadius: 1, width: '80%' }} />
+                  </Box>
+                ))}
+              </Box>
+            ) : !selected ? (
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', py: 12, gap: 2 }}>
                 <MenuBookIcon sx={{ fontSize: 64, color: 'grey.200' }} />
                 <Typography variant="h6" color="text.disabled" fontWeight={500}>
                   Select an SOP to view details
@@ -501,7 +530,7 @@ function SOPManagement() {
       </Grid>
 
       {/* ── Create SOP Dialog ── */}
-      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="md" fullWidth fullScreen={fullScreen}>
         <DialogTitle sx={{ pb: 1 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
             <Avatar sx={{ bgcolor: 'primary.main', width: 36, height: 36 }}>
@@ -695,7 +724,7 @@ function SOPManagement() {
       </Dialog>
 
       {/* ── Execute SOP Dialog ── */}
-      <Dialog open={execOpen} onClose={() => setExecOpen(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+      <Dialog open={execOpen} onClose={() => setExecOpen(false)} maxWidth="sm" fullWidth fullScreen={fullScreen}>
         <DialogTitle sx={{ pb: 1 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
             <Avatar sx={{ bgcolor: 'success.main', width: 36, height: 36 }}>

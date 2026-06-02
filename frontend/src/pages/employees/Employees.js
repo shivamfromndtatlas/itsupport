@@ -14,6 +14,8 @@ import {
   Snackbar,
   Alert,
   Grid,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DataTable from '../../components/common/DataTable';
@@ -50,6 +52,8 @@ const EMPTY_FORM = {
 
 function Employees() {
   const { hasRole } = useAuth();
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const canEdit = hasRole('super_admin', 'hr');
 
   const [rows, setRows] = useState([]);
@@ -139,6 +143,7 @@ function Employees() {
   const columns = [
     { field: 'employee_id', headerName: 'Employee ID', width: 130 },
     { field: 'full_name', headerName: 'Full Name', flex: 1, minWidth: 150 },
+    { field: 'alias_name', headerName: 'Alias Name', flex: 1, minWidth: 130 },
     { field: 'official_email', headerName: 'Email', flex: 1.2, minWidth: 180 },
     { field: 'contact_number', headerName: 'Contact', width: 140 },
     {
@@ -197,7 +202,7 @@ function Employees() {
         searchable
       />
 
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="md" fullWidth>
+      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="md" fullWidth fullScreen={fullScreen}>
         <DialogTitle>{editRow ? 'Edit Employee' : 'Add Employee'}</DialogTitle>
         <DialogContent sx={{ pt: '12px !important' }}>
           <Grid container spacing={2}>
@@ -276,10 +281,10 @@ function Employees() {
             </Grid>
           </Grid>
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
+        <DialogActions>
+          <Button onClick={() => setDialogOpen(false)} sx={{ color: 'text.secondary' }}>Cancel</Button>
           <Button variant="contained" onClick={handleSave} disabled={saving}>
-            {saving ? 'Saving...' : 'Save'}
+            {saving ? 'Saving…' : 'Save'}
           </Button>
         </DialogActions>
       </Dialog>

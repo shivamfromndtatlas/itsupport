@@ -13,6 +13,8 @@ import {
   Tooltip,
   Snackbar,
   Alert,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import BlockIcon from '@mui/icons-material/Block';
@@ -38,6 +40,8 @@ const ROLE_COLORS = {
 const EMPTY_FORM = { full_name: '', email: '', password: '', role: 'employee' };
 
 function UserManagement() {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -185,7 +189,7 @@ function UserManagement() {
       />
 
       {/* Add / Edit Dialog */}
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth fullScreen={fullScreen}>
         <DialogTitle>{editUser ? 'Edit User' : 'Add New User'}</DialogTitle>
         <DialogContent sx={{ pt: '12px !important' }}>
           <TextField

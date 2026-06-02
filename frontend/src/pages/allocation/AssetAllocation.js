@@ -18,6 +18,8 @@ import {
   Snackbar,
   Alert,
   Grid,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
 import SettingsBackupRestoreIcon from '@mui/icons-material/SettingsBackupRestore';
 import PrintIcon from '@mui/icons-material/Print';
@@ -44,6 +46,8 @@ const EMPTY_SW_FORM = {
 };
 
 function AssetAllocation() {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const [tab, setTab] = useState(0);
 
   // Hardware
@@ -440,7 +444,7 @@ function AssetAllocation() {
       </Paper>
 
       {/* HW Assign Dialog */}
-      <Dialog open={hwDialog} onClose={() => setHwDialog(false)} maxWidth="sm" fullWidth>
+      <Dialog open={hwDialog} onClose={() => setHwDialog(false)} maxWidth="sm" fullWidth fullScreen={fullScreen}>
         <DialogTitle>Assign Asset</DialogTitle>
         <DialogContent sx={{ pt: '12px !important' }}>
           <Grid container spacing={2}>
@@ -505,7 +509,7 @@ function AssetAllocation() {
       </Dialog>
 
       {/* SW Assign Dialog */}
-      <Dialog open={swDialog} onClose={() => setSwDialog(false)} maxWidth="sm" fullWidth>
+      <Dialog open={swDialog} onClose={() => setSwDialog(false)} maxWidth="sm" fullWidth fullScreen={fullScreen}>
         <DialogTitle>Assign Software License</DialogTitle>
         <DialogContent sx={{ pt: '12px !important' }}>
           <Grid container spacing={2}>

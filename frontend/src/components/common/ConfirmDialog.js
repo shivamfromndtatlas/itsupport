@@ -15,8 +15,8 @@ function ConfirmDialog({ open, title, message, onConfirm, onCancel, confirmLabel
       <DialogContent>
         <DialogContentText>{message}</DialogContentText>
       </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onCancel} variant="outlined">
+      <DialogActions>
+        <Button onClick={onCancel} variant="outlined" sx={{ borderColor: 'divider', color: 'text.secondary' }}>
           Cancel
         </Button>
         <Button onClick={onConfirm} variant="contained" color={confirmColor}>

@@ -14,7 +14,6 @@ import {
   Typography,
 } from '@mui/material';
 import ClearIcon from '@mui/icons-material/Clear';
-import CloudSyncIcon from '@mui/icons-material/CloudSync';
 import KeyIcon from '@mui/icons-material/Key';
 import SaveIcon from '@mui/icons-material/Save';
 import SyncIcon from '@mui/icons-material/Sync';
@@ -191,13 +190,6 @@ function Integrations() {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mb: 3 }}>
-        <CloudSyncIcon color="primary" />
-        <Typography variant="h5" fontWeight={700}>
-          Sure MDM
-        </Typography>
-      </Stack>
-
       {message && (
         <Alert severity={message.severity} onClose={() => setMessage(null)} sx={{ mb: 2 }}>
           {message.text}
@@ -370,15 +362,27 @@ function Integrations() {
                   </Stack>
                 </Grid>
               </Grid>
-              <DataGrid
-                rows={filteredDevices}
-                columns={columns}
-                autoHeight
-                disableRowSelectionOnClick
-                pageSizeOptions={[10, 25]}
-                initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-                sx={{ border: 0 }}
-              />
+              <Box sx={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                <DataGrid
+                  rows={filteredDevices}
+                  columns={columns}
+                  autoHeight
+                  disableRowSelectionOnClick
+                  pageSizeOptions={[10, 25]}
+                  initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+                  sx={{
+                    border: 'none',
+                    minWidth: 500,
+                    fontSize: 13.5,
+                    '& .MuiDataGrid-columnHeaders': { backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' },
+                    '& .MuiDataGrid-columnHeaderTitle': { fontWeight: 700, fontSize: 12, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em' },
+                    '& .MuiDataGrid-row:hover': { backgroundColor: '#F8FAFC' },
+                    '& .MuiDataGrid-cell': { borderBottom: '1px solid #F1F5F9', '&:focus': { outline: 'none' }, '&:focus-within': { outline: 'none' } },
+                    '& .MuiDataGrid-footerContainer': { borderTop: '1px solid #E2E8F0', backgroundColor: '#F8FAFC' },
+                    '& .MuiDataGrid-columnSeparator': { display: 'none' },
+                  }}
+                />
+              </Box>
             </CardContent>
           </Card>
         </Grid>

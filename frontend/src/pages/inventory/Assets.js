@@ -20,6 +20,8 @@ import {
   Grid,
   FormControlLabel,
   Checkbox,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -64,6 +66,8 @@ function TabPanel({ value, index, children }) {
 }
 
 function Assets() {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const [tab, setTab] = useState(0);
 
   // Hardware
@@ -614,7 +618,7 @@ function Assets() {
       </Paper>
 
       {/* Add/Edit Asset Dialog */}
-      <Dialog open={assetDialog} onClose={() => setAssetDialog(false)} maxWidth="sm" fullWidth>
+      <Dialog open={assetDialog} onClose={() => setAssetDialog(false)} maxWidth="sm" fullWidth fullScreen={fullScreen}>
         <DialogTitle>{editAsset ? 'Edit Asset' : 'Add Asset'}</DialogTitle>
         <DialogContent sx={{ pt: '12px !important' }}>
           <Grid container spacing={2}>
@@ -680,7 +684,7 @@ function Assets() {
       </Dialog>
 
       {/* Add/Edit License Dialog */}
-      <Dialog open={licenseDialog} onClose={() => setLicenseDialog(false)} maxWidth="sm" fullWidth>
+      <Dialog open={licenseDialog} onClose={() => setLicenseDialog(false)} maxWidth="sm" fullWidth fullScreen={fullScreen}>
         <DialogTitle>{editLicense ? 'Edit License' : 'Add License'}</DialogTitle>
         <DialogContent sx={{ pt: '12px !important' }}>
           <Grid container spacing={2}>
