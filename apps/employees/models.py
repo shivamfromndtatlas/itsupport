@@ -26,7 +26,7 @@ class Employee(models.Model):
     full_name = models.CharField(max_length=200)
     alias_name = models.CharField(max_length=100, blank=True)
     official_email = models.EmailField(unique=True)
-    contact_number = models.CharField(max_length=20)
+    contact_number = models.CharField(max_length=20, blank=True)
     core_process_code = models.CharField(max_length=10, choices=CORE_PROCESS_CHOICES, blank=True)
     core_process_name = models.CharField(max_length=200, blank=True)
     designation = models.CharField(max_length=200, blank=True)

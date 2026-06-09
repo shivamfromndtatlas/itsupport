@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Box,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
   Grid,
   Paper,
   Typography,
@@ -16,9 +20,29 @@ import {
   Alert,
   Chip,
   Divider,
+  IconButton,
+  Tooltip,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
+import EditIcon from '@mui/icons-material/Edit';
 import api from '../../api/axios';
 import DataTable from '../../components/common/DataTable';
+
+const STATUS_OPTIONS = ['active', 'inactive', 'on_leave'];
+const STATUS_COLORS = { active: 'success', inactive: 'default', on_leave: 'warning' };
+
+const CORE_PROCESSES = [
+  { code: '01AOS', name: 'AEIS Operating Process' },
+  { code: '02BDP', name: 'Business Development Process' },
+  { code: '03HRP', name: 'Peoples Process' },
+  { code: '04OPS', name: 'Operations Management Process' },
+  { code: '05QCP', name: 'Quality Assurance & Compliance Process' },
+  { code: '06TMP', name: 'Technology Management Process' },
+  { code: '07FIN', name: 'Finance Process' },
+  { code: '08TRD', name: 'Training & Development Process' },
+  { code: '09ILP', name: 'Innovation Lab Process' },
+];
 
 const MULTI_SELECT_MENU_PROPS = {
   PaperProps: {
@@ -43,6 +67,18 @@ const INITIAL_MEMBER_FORM = {
   official_email: '',
   contact_number: '',
   designation: '',
+};
+
+const INITIAL_EDIT_FORM = {
+  employee_id: '',
+  full_name: '',
+  alias_name: '',
+  official_email: '',
+  contact_number: '',
+  core_process_code: '',
+  designation: '',
+  date_of_joining: '',
+  status: 'active',
 };
 
 const getLogoUrl = (logo) => {
@@ -111,14 +147,20 @@ function OrganisationLogo({ org, size = 52 }) {
 }
 
 function Organisations() {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const [orgs, setOrgs] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [memberProfiles, setMemberProfiles] = useState([]);
   const [orgForm, setOrgForm] = useState(INITIAL_ORG_FORM);
   const [memberForm, setMemberForm] = useState(INITIAL_MEMBER_FORM);
+  const [editMember, setEditMember] = useState(null);
+  const [editForm, setEditForm] = useState(INITIAL_EDIT_FORM);
   const [selectedClientOrgId, setSelectedClientOrgId] = useState('');
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
   const [message, setMessage] = useState({ type: '', text: '' });
   const [loading, setLoading] = useState(false);
+  const [savingMember, setSavingMember] = useState(false);
 
   const baseOrg = useMemo(() => orgs.find((org) => org.is_base), [orgs]);
   const clientOrgs = useMemo(() => orgs.filter((org) => !org.is_base), [orgs]);
@@ -126,39 +168,12 @@ function Organisations() {
     () => clientOrgs.find((org) => String(org.id) === String(selectedClientOrgId)) || null,
     [clientOrgs, selectedClientOrgId]
   );
-  const clientMembers = useMemo(() => {
-    if (!selectedClientOrgId) return [];
-    return employees.filter((employee) =>
-      Array.isArray(employee.organisations) &&
-      employee.organisations.some((orgId) => String(orgId) === String(selectedClientOrgId))
-    );
-  }, [employees, selectedClientOrgId]);
-  const memberColumns = useMemo(() => [
-    { field: 'employee_id', headerName: 'Employee ID', minWidth: 130, flex: 0.8 },
-    { field: 'full_name', headerName: 'Name', minWidth: 180, flex: 1.2 },
-    { field: 'official_email', headerName: 'Email', minWidth: 220, flex: 1.4 },
-    { field: 'contact_number', headerName: 'Contact', minWidth: 140, flex: 1 },
-    { field: 'designation', headerName: 'Designation', minWidth: 170, flex: 1 },
-    {
-      field: 'status',
-      headerName: 'Status',
-      minWidth: 120,
-      flex: 0.7,
-      renderCell: (params) => (
-        <Chip
-          label={(params.value || 'active').replace(/_/g, ' ')}
-          size="small"
-          color={params.value === 'inactive' ? 'default' : params.value === 'on_leave' ? 'warning' : 'success'}
-          sx={{ textTransform: 'capitalize', fontWeight: 600 }}
-        />
-      ),
-    },
-  ], []);
-
+  const clientMembers = useMemo(() => memberProfiles, [memberProfiles]);
   const baseEmployees = useMemo(() => {
     if (!baseOrg) return [];
     return employees.filter((employee) =>
-      Array.isArray(employee.organisations) && employee.organisations.includes(baseOrg.id)
+      Array.isArray(employee.organisations) &&
+      employee.organisations.some((orgId) => String(orgId) === String(baseOrg.id))
     );
   }, [employees, baseOrg]);
 
@@ -183,10 +198,30 @@ function Organisations() {
     }
   };
 
+  const loadClientMembers = async (clientOrgId = selectedClientOrgId) => {
+    if (!clientOrgId) {
+      setMemberProfiles([]);
+      return;
+    }
+
+    try {
+      const { data } = await api.get(`/organisations/${clientOrgId}/member-profiles/`);
+      setMemberProfiles(Array.isArray(data) ? data : data.results || []);
+    } catch (error) {
+      setMemberProfiles([]);
+      setMessage({ type: 'error', text: 'Unable to load client organisation members.' });
+    }
+  };
+
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    loadClientMembers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClientOrgId]);
 
   const handleOrgFormChange = (field) => (event) => {
     const value = field === 'logo' ? event.target.files?.[0] || null : event.target.value;
@@ -195,6 +230,30 @@ function Organisations() {
 
   const handleMemberFormChange = (field) => (event) => {
     setMemberForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  function openEditMember(row) {
+    setEditMember(row);
+    setEditForm({
+      employee_id: row.employee_id || '',
+      full_name: row.full_name || '',
+      alias_name: row.alias_name || '',
+      official_email: row.official_email || '',
+      contact_number: row.contact_number || '',
+      core_process_code: row.core_process_code || '',
+      designation: row.designation || '',
+      date_of_joining: row.date_of_joining || '',
+      status: row.status || 'active',
+    });
+  }
+
+  const handleEditFormChange = (field) => (event) => {
+    setEditForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handleCloseEditMember = () => {
+    setEditMember(null);
+    setEditForm(INITIAL_EDIT_FORM);
   };
 
   const handleCreateOrganisation = async () => {
@@ -245,15 +304,15 @@ function Organisations() {
     };
 
     if (memberForm.employee_id) {
-      if (!memberForm.full_name || !memberForm.official_email || !memberForm.contact_number) {
-        setMessage({ type: 'error', text: 'New member requires ID, name, email, and contact number.' });
+      if (!memberForm.full_name || !memberForm.official_email) {
+        setMessage({ type: 'error', text: 'New member requires ID, name, and email.' });
         return;
       }
       payload.new_members.push({
         employee_id: memberForm.employee_id,
         full_name: memberForm.full_name,
         official_email: memberForm.official_email,
-        contact_number: memberForm.contact_number,
+        contact_number: memberForm.contact_number || '',
         designation: memberForm.designation,
       });
     }
@@ -265,6 +324,7 @@ function Organisations() {
       setSelectedEmployeeIds([]);
       setMemberForm(INITIAL_MEMBER_FORM);
       await loadData();
+      await loadClientMembers(selectedClientOrgId);
     } catch (error) {
       const text = typeof error.response?.data === 'string'
         ? error.response.data
@@ -274,6 +334,79 @@ function Organisations() {
       setLoading(false);
     }
   };
+
+  const handleSaveMember = async () => {
+    if (!editMember) return;
+    if (!editForm.full_name || !editForm.official_email) {
+      setMessage({ type: 'error', text: 'Employee name and email are required.' });
+      return;
+    }
+
+    const payload = {
+      ...editForm,
+      employee: editMember.employee || editMember.id,
+      contact_number: editForm.contact_number || '',
+      date_of_joining: editForm.date_of_joining || null,
+    };
+
+    try {
+      setSavingMember(true);
+      await api.patch(`/organisations/${selectedClientOrgId}/member-profiles/`, payload);
+      setMessage({ type: 'success', text: 'Employee details updated.' });
+      handleCloseEditMember();
+      await loadClientMembers(selectedClientOrgId);
+    } catch (error) {
+      const responseData = error.response?.data;
+      const text = responseData?.detail ||
+        (typeof responseData === 'object' ? Object.values(responseData).flat().join(' ') : '') ||
+        'Unable to update employee details.';
+      setMessage({ type: 'error', text });
+    } finally {
+      setSavingMember(false);
+    }
+  };
+
+  const memberColumns = [
+    { field: 'employee_id', headerName: 'Employee ID', minWidth: 130, flex: 0.8 },
+    { field: 'display_name', headerName: 'Name', minWidth: 180, flex: 1.2 },
+    { field: 'official_email', headerName: 'Email', minWidth: 220, flex: 1.4 },
+    {
+      field: 'contact_number',
+      headerName: 'Contact',
+      minWidth: 140,
+      flex: 1,
+      valueGetter: (value) => value || '-',
+    },
+    { field: 'designation', headerName: 'Designation', minWidth: 170, flex: 1 },
+    {
+      field: 'status',
+      headerName: 'Status',
+      minWidth: 120,
+      flex: 0.7,
+      renderCell: (params) => (
+        <Chip
+          label={(params.value || 'active').replace(/_/g, ' ')}
+          size="small"
+          color={STATUS_COLORS[params.value] || 'default'}
+          sx={{ textTransform: 'capitalize', fontWeight: 600 }}
+        />
+      ),
+    },
+    {
+      field: 'actions',
+      headerName: 'Actions',
+      minWidth: 100,
+      sortable: false,
+      filterable: false,
+      renderCell: ({ row }) => (
+        <Tooltip title="Edit employee">
+          <IconButton size="small" onClick={() => openEditMember(row)}>
+            <EditIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      ),
+    },
+  ];
 
   return (
     <Box>
@@ -551,7 +684,7 @@ function Organisations() {
                 </Grid>
                 <Grid item xs={12} md={3}>
                   <TextField
-                    label="Contact Number"
+                    label="Contact Number (optional)"
                     value={memberForm.contact_number}
                     onChange={handleMemberFormChange('contact_number')}
                     fullWidth
@@ -583,6 +716,127 @@ function Organisations() {
           </Grid>
         )}
       </Grid>
+
+      <Dialog
+        open={Boolean(editMember)}
+        onClose={handleCloseEditMember}
+        maxWidth="md"
+        fullWidth
+        fullScreen={fullScreen}
+      >
+        <DialogTitle>Edit Client Employee Details</DialogTitle>
+        <DialogContent sx={{ pt: '12px !important' }}>
+          <Grid container spacing={2}>
+            <Grid item xs={12} sm={4}>
+              <TextField
+                label="Employee ID"
+                value={editForm.employee_id}
+                fullWidth
+                disabled
+              />
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <TextField
+                label="Client Name"
+                value={editForm.full_name}
+                onChange={handleEditFormChange('full_name')}
+                fullWidth
+              />
+            </Grid>
+            {editMember?.is_base_employee && (
+              <Grid item xs={12} sm={4}>
+                <TextField
+                  label="Client Alias Name"
+                  value={editForm.alias_name}
+                  onChange={handleEditFormChange('alias_name')}
+                  fullWidth
+                />
+              </Grid>
+            )}
+            <Grid item xs={12} sm={4}>
+              <TextField
+                label="Client Email"
+                type="email"
+                value={editForm.official_email}
+                onChange={handleEditFormChange('official_email')}
+                fullWidth
+              />
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <TextField
+                label="Client Contact Number (optional)"
+                value={editForm.contact_number}
+                onChange={handleEditFormChange('contact_number')}
+                fullWidth
+              />
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <TextField
+                label="Client Designation"
+                value={editForm.designation}
+                onChange={handleEditFormChange('designation')}
+                fullWidth
+              />
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <TextField
+                type="date"
+                label="Client Date of Joining"
+                value={editForm.date_of_joining}
+                onChange={handleEditFormChange('date_of_joining')}
+                fullWidth
+                InputLabelProps={{ shrink: true }}
+                InputProps={{ notched: true }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={8}>
+              <TextField
+                select
+                label="Core Process"
+                value={editForm.core_process_code}
+                onChange={handleEditFormChange('core_process_code')}
+                fullWidth
+                InputLabelProps={{ shrink: true }}
+              >
+                <MenuItem value="">None</MenuItem>
+                {CORE_PROCESSES.map((process) => (
+                  <MenuItem key={process.code} value={process.code}>
+                    <Box>
+                      <Box component="span" sx={{ fontWeight: 600, mr: 1, color: 'primary.main' }}>
+                        {process.code}
+                      </Box>
+                      {process.name}
+                    </Box>
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <TextField
+                select
+                label="Status"
+                value={editForm.status}
+                onChange={handleEditFormChange('status')}
+                fullWidth
+              >
+                {STATUS_OPTIONS.map((status) => (
+                  <MenuItem key={status} value={status}>
+                    {status.replace(/_/g, ' ')}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+          </Grid>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseEditMember} sx={{ color: 'text.secondary' }}>
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={handleSaveMember} disabled={savingMember}>
+            {savingMember ? 'Saving...' : 'Save'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

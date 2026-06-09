@@ -5,9 +5,10 @@ from rest_framework.response import Response
 
 from apps.employees.models import Employee
 from apps.employees.serializers import EmployeeSerializer
-from apps.organisations.models import Organisation
+from apps.organisations.models import Organisation, OrganisationMemberProfile
 from apps.organisations.serializers import (
     OrganisationMemberAssignmentSerializer,
+    OrganisationMemberProfileSerializer,
     OrganisationSerializer,
 )
 from apps.users.permissions import IsSuperAdmin
@@ -46,6 +47,11 @@ class OrganisationViewSet(viewsets.ModelViewSet):
         if employee_ids:
             employees = Employee.objects.filter(id__in=employee_ids, organisations__is_base=True).distinct()
             organisation.members.add(*employees)
+            for employee in employees:
+                OrganisationMemberProfile.objects.get_or_create(
+                    organisation=organisation,
+                    employee=employee,
+                )
 
         created_employees = []
         for member_data in new_members:
@@ -53,6 +59,10 @@ class OrganisationViewSet(viewsets.ModelViewSet):
             employee_serializer.is_valid(raise_exception=True)
             employee = employee_serializer.save()
             employee.organisations.add(organisation)
+            OrganisationMemberProfile.objects.get_or_create(
+                organisation=organisation,
+                employee=employee,
+            )
             created_employees.append(employee)
 
         assigned_ids = list(Employee.objects.filter(organisations=organisation).values_list('id', flat=True))
@@ -66,3 +76,45 @@ class OrganisationViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
+
+    @action(detail=True, methods=['get', 'patch'], url_path='member-profiles', url_name='member-profiles')
+    def member_profiles(self, request, pk=None):
+        organisation = self.get_object()
+        if organisation.is_base:
+            return Response(
+                {'detail': 'Client-specific member profiles are only available for client organisations.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if request.method == 'PATCH' and getattr(request.user, 'role', None) != 'super_admin':
+            return Response({'detail': 'You do not have permission to edit member profiles.'}, status=status.HTTP_403_FORBIDDEN)
+
+        if request.method == 'GET':
+            profiles = []
+            employees = Employee.objects.filter(organisations=organisation).prefetch_related('organisations')
+            for employee in employees:
+                profile, _ = OrganisationMemberProfile.objects.get_or_create(
+                    organisation=organisation,
+                    employee=employee,
+                )
+                profiles.append(profile)
+            serializer = OrganisationMemberProfileSerializer(profiles, many=True)
+            return Response(serializer.data)
+
+        employee_id = request.data.get('employee') or request.data.get('id')
+        if not employee_id:
+            return Response({'detail': 'Employee is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            employee = Employee.objects.get(id=employee_id, organisations=organisation)
+        except Employee.DoesNotExist:
+            return Response({'detail': 'Employee is not a member of this organisation.'}, status=status.HTTP_404_NOT_FOUND)
+
+        profile, _ = OrganisationMemberProfile.objects.get_or_create(
+            organisation=organisation,
+            employee=employee,
+        )
+        serializer = OrganisationMemberProfileSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

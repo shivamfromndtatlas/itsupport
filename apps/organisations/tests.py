@@ -2,7 +2,7 @@ from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from apps.employees.models import Employee
-from apps.organisations.models import Organisation
+from apps.organisations.models import Organisation, OrganisationMemberProfile
 from apps.users.models import User
 
 
@@ -115,3 +115,46 @@ class OrganisationTests(APITestCase):
         self.assertTrue(
             Employee.objects.filter(employee_id='EMP003', organisations=client_org).exists()
         )
+
+    def test_client_member_profile_update_does_not_change_employee_record(self):
+        base_org = Organisation.objects.create(
+            name='Base Org',
+            address='123 Corporate Street',
+            city='Mumbai',
+            country='India',
+            is_base=True,
+        )
+        client_org = Organisation.objects.create(
+            name='Client Org',
+            address='55 Client Lane',
+            city='Bengaluru',
+            country='India',
+            is_base=False,
+        )
+        employee = Employee.objects.create(
+            employee_id='EMP004',
+            full_name='Anna Gray',
+            alias_name='A Gray',
+            official_email='agoel@ndtatlas.com',
+            contact_number='',
+        )
+        employee.organisations.add(base_org, client_org)
+        OrganisationMemberProfile.objects.create(organisation=client_org, employee=employee)
+
+        response = self.client.patch(
+            reverse('organisation-member-profiles', kwargs={'pk': client_org.id}),
+            {
+                'employee': employee.id,
+                'official_email': 'agray@aeis.com',
+                'designation': 'Client Lead',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['official_email'], 'agray@aeis.com')
+        self.assertEqual(response.data['designation'], 'Client Lead')
+
+        employee.refresh_from_db()
+        self.assertEqual(employee.official_email, 'agoel@ndtatlas.com')
+        self.assertEqual(employee.designation, '')

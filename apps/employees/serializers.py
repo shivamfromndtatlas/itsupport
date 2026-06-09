@@ -51,6 +51,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'core_process_name', 'created_at', 'updated_at']
         extra_kwargs = {
+            'contact_number': {'required': False, 'allow_blank': True},
             'line_manager': {'write_only': True, 'required': False, 'allow_null': True},
         }
 
