@@ -90,6 +90,7 @@ const NAV_SECTIONS = [
     roles: ['super_admin'],
     items: [
       { label: 'User Management', icon: <AdminPanelSettingsIcon sx={{ fontSize: 20 }} />, path: '/users', roles: ['super_admin'] },
+      { label: 'Organisations', icon: <PeopleIcon sx={{ fontSize: 20 }} />, path: '/organisations', roles: ['super_admin'] },
     ],
   },
 ];

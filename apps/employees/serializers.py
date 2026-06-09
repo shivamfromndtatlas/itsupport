@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from apps.organisations.models import Organisation
 from .models import Employee
 
 CORE_PROCESS_MAP = dict(Employee.CORE_PROCESS_CHOICES)
@@ -13,9 +14,19 @@ class LineManagerSerializer(serializers.ModelSerializer):
         fields = ['id', 'employee_id', 'full_name']
 
 
+class OrganisationReferenceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Organisation
+        fields = ['id', 'name', 'is_base']
+
+
 class EmployeeSerializer(serializers.ModelSerializer):
     line_manager_detail = LineManagerSerializer(source='line_manager', read_only=True)
     core_process_name = serializers.CharField(read_only=True)
+    organisations = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=Organisation.objects.all(), required=False
+    )
+    organisation_details = OrganisationReferenceSerializer(source='organisations', many=True, read_only=True)
 
     class Meta:
         model = Employee
@@ -31,6 +42,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'designation',
             'line_manager',
             'line_manager_detail',
+            'organisations',
+            'organisation_details',
             'status',
             'date_of_joining',
             'created_at',

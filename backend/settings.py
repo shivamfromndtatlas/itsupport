@@ -20,6 +20,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'apps.users',
+    'apps.organisations',
     'apps.employees',
     'apps.onboarding',
     'apps.sop',
@@ -70,6 +71,9 @@ DATABASES = {
         'OPTIONS': {
             'charset': 'utf8mb4',
         },
+        'TEST': {
+            'NAME': 'test_it_support_db',
+        },
     }
 }
 
@@ -82,8 +86,8 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 20,
+    'DEFAULT_PAGINATION_CLASS': None,
+    'PAGE_SIZE': None,
 }
 
 SIMPLE_JWT = {

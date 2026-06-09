@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Box,
   Card,
@@ -7,12 +8,14 @@ import {
   Typography,
   Skeleton,
   Alert,
+  ButtonBase,
 } from '@mui/material';
 import PeopleIcon from '@mui/icons-material/People';
 import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumber';
 import DevicesIcon from '@mui/icons-material/Devices';
 import LaptopWindowsIcon from '@mui/icons-material/LaptopWindows';
 import PersonAddIcon from '@mui/icons-material/PersonAdd';
+import BusinessIcon from '@mui/icons-material/Business';
 import {
   BarChart,
   Bar,
@@ -103,6 +106,7 @@ function Dashboard() {
   const userName = user?.full_name || user?.email || 'User';
   const firstName = userName.split(' ')[0];
   const roleName = (user?.role || '').replace(/_/g, ' ');
+  const navigate = useNavigate();
 
   useEffect(() => {
     const fetchAll = async () => {
@@ -218,6 +222,38 @@ function Dashboard() {
         )}
       </Grid>
 
+      {/* Shortcut tiles for quick actions */}
+      {hasRole('super_admin') && (
+        <Grid container spacing={2.5} sx={{ mb: 3 }}>
+          <Grid item xs={12} sm={6} md={3}>
+            <Card
+              component={ButtonBase}
+              sx={{
+                height: '100%',
+                width: '100%',
+                display: 'block',
+                textAlign: 'left',
+              }}
+              onClick={() => navigate('/organisations')}
+            >
+              <CardContent sx={{ p: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Box>
+                  <Typography variant="body2" color="text.secondary" fontWeight={500} sx={{ fontSize: 13, mb: 1 }}>
+                    Shortcut
+                  </Typography>
+                  <Typography sx={{ fontSize: 18, fontWeight: 700, color: 'text.primary' }}>
+                    Organisation Management
+                  </Typography>
+                </Box>
+                <Box sx={{ bgcolor: 'rgba(79,70,229,0.08)', borderRadius: '12px', p: 1.25 }}>
+                  <BusinessIcon sx={{ fontSize: 26, color: '#4F46E5' }} />
+                </Box>
+              </CardContent>
+            </Card>
+          </Grid>
+        </Grid>
+      )}
+
       {/* Charts */}
       {canSeeAssets && (
         <Grid container spacing={2.5}>
@@ -265,9 +301,18 @@ function Dashboard() {
                 <Skeleton variant="rectangular" height={260} sx={{ borderRadius: 2 }} />
               ) : mdmCategoryData.length > 0 ? (
                 <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={mdmCategoryData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }} barSize={28}>
+                  <BarChart data={mdmCategoryData} margin={{ top: 0, right: 0, left: -20, bottom: 36 }} barSize={28}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" vertical={false} />
-                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#94A3B8' }} axisLine={false} tickLine={false} interval={0} />
+                    <XAxis
+                      dataKey="name"
+                      tick={{ fontSize: 11, fill: '#94A3B8' }}
+                      axisLine={false}
+                      tickLine={false}
+                      interval={0}
+                      angle={-30}
+                      textAnchor="end"
+                      height={56}
+                    />
                     <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: '#94A3B8' }} axisLine={false} tickLine={false} />
                     <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(14,165,233,0.04)' }} />
                     <Bar dataKey="count" radius={[6, 6, 0, 0]} name="Systems">

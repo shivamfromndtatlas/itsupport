@@ -1,4 +1,6 @@
 from django.db import models
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 
 
 class Employee(models.Model):
@@ -31,6 +33,9 @@ class Employee(models.Model):
     line_manager = models.ForeignKey(
         'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='subordinates'
     )
+    organisations = models.ManyToManyField(
+        'organisations.Organisation', blank=True, related_name='members'
+    )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
     date_of_joining = models.DateField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -42,3 +47,13 @@ class Employee(models.Model):
 
     def __str__(self):
         return f'{self.full_name} ({self.employee_id})'
+
+
+@receiver(post_save, sender=Employee)
+def ensure_base_organisation_membership(sender, instance, created, **kwargs):
+    if instance.organisations.count() == 0:
+        from apps.organisations.models import Organisation
+
+        base_org = Organisation.objects.filter(is_base=True).first()
+        if base_org:
+            instance.organisations.add(base_org)

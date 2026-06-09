@@ -26,3 +26,66 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #94A3B8;
 }
+
+:root {
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --micro-duration: 180ms;
+  --micro-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Micro-animations and spacing tweaks for MUI components and icons */
+@media (prefers-reduced-motion: no-preference) {
+  .MuiCard-root {
+    transition: transform var(--micro-duration) var(--micro-ease), box-shadow var(--micro-duration) var(--micro-ease);
+    will-change: transform;
+  }
+
+  .MuiCard-root:hover {
+    transform: translateY(-6px);
+    box-shadow: 0 12px 30px rgba(16,24,40,0.08);
+  }
+
+  .MuiButton-root {
+    transition: transform var(--micro-duration) var(--micro-ease), box-shadow var(--micro-duration) var(--micro-ease), background-color var(--micro-duration);
+  }
+
+  .MuiButton-root:hover {
+    transform: translateY(-2px);
+  }
+
+  .MuiCardHeader-root, .MuiCardContent-root, .MuiCardActions-root {
+    transition: padding var(--micro-duration) var(--micro-ease);
+  }
+}
+
+/* Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .MuiCard-root, .MuiButton-root, .card-micro, .btn-micro {
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/* Spacing / icon tweaks */
+.MuiCardContent-root { padding: 14px 16px; }
+.MuiCardHeader-content { margin-left: 8px; }
+.MuiListItemIcon-root { min-width: 40px; margin-right: 8px; display:flex; align-items:center; justify-content:center; }
+.MuiButton-startIcon, .MuiButton-endIcon { display:inline-flex; align-items:center; }
+.MuiButton-startIcon > * { margin-right: 6px; }
+.MuiSvgIcon-root { vertical-align: middle; margin-right: 6px; }
+
+/* Utility classes you can add to components for stronger effects */
+.card-micro {
+  transition: transform var(--micro-duration) var(--micro-ease), box-shadow var(--micro-duration) var(--micro-ease), opacity var(--micro-duration);
+  will-change: transform, opacity;
+}
+.card-micro:hover { transform: translateY(-6px); box-shadow: 0 12px 30px rgba(16,24,40,0.06); }
+
+.btn-micro { transition: transform var(--micro-duration) var(--micro-ease), box-shadow var(--micro-duration); }
+.btn-micro:hover { transform: translateY(-2px); }
+
+.utility-gap-sm { gap: 8px; }
+.utility-gap-md { gap: 12px; }

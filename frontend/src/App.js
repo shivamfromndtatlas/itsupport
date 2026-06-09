@@ -19,6 +19,7 @@ import InventoryConfig from './pages/inventory/InventoryConfig';
 import AssetAllocation from './pages/allocation/AssetAllocation';
 import Tickets from './pages/tickets/Tickets';
 import Integrations from './pages/integrations/Integrations';
+import Organisations from './pages/organisations/Organisations';
 
 function App() {
   return (
@@ -120,6 +121,16 @@ function App() {
             element={
               <RoleRoute roles={['super_admin']}>
                 <UserManagement />
+              </RoleRoute>
+            }
+          />
+
+          {/* Organisations - super_admin only */}
+          <Route
+            path="/organisations"
+            element={
+              <RoleRoute roles={['super_admin']}>
+                <Organisations />
               </RoleRoute>
             }
           />
