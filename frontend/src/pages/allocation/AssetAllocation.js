@@ -86,8 +86,8 @@ function AssetAllocation() {
 
   const formatAssetLabel = (asset) => {
     if (!asset) return '';
-    const values = asset.attribute_values || {};
-    const make = values.make || values.Make || values.make_name || values.MakeName || '';
+    const values = asset.attribute_values_with_names || asset.attribute_values || {};
+    const make = values.make || values.Make || values.make_name || values.MakeName || values.Brand || values.brand || '';
     const model = values.model || values.Model || values.model_name || values.ModelName || '';
     const typeName = asset.asset_type_name || asset.asset_type || '';
     const details = [make, model].filter(Boolean).join(' - ');

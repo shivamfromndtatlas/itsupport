@@ -16,6 +16,12 @@ import {
   Grid,
   useMediaQuery,
   useTheme,
+  FormControl,
+  InputLabel,
+  Select,
+  OutlinedInput,
+  Checkbox,
+  ListItemText,
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DataTable from '../../components/common/DataTable';
@@ -48,6 +54,7 @@ const EMPTY_FORM = {
   designation: '',
   date_of_joining: '',
   status: 'active',
+  organisations: [],
 };
 
 function Employees() {
@@ -57,6 +64,7 @@ function Employees() {
   const canEdit = hasRole('super_admin', 'hr');
 
   const [rows, setRows] = useState([]);
+  const [organisations, setOrganisations] = useState([]);
   const [loading, setLoading] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editRow, setEditRow] = useState(null);
@@ -71,11 +79,16 @@ function Employees() {
   const fetchEmployees = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get('/employees/');
-      const data = Array.isArray(res.data) ? res.data : res.data.results || [];
-      setRows(data.map((e) => ({ ...e, id: e.id || e.employee_id })));
+      const [empRes, orgRes] = await Promise.all([
+        api.get('/employees/'),
+        api.get('/organisations/'),
+      ]);
+      const empData = Array.isArray(empRes.data) ? empRes.data : empRes.data.results || [];
+      const orgData = Array.isArray(orgRes.data) ? orgRes.data : orgRes.data.results || [];
+      setRows(empData.map((e) => ({ ...e, id: e.id || e.employee_id })));
+      setOrganisations(orgData);
     } catch {
-      showSnack('Failed to load employees.', 'error');
+      showSnack('Failed to load employees or organisations.', 'error');
     } finally {
       setLoading(false);
     }
@@ -103,6 +116,7 @@ function Employees() {
       designation: row.designation || '',
       date_of_joining: row.date_of_joining || '',
       status: row.status || 'active',
+      organisations: row.organisations || [],
     });
     setDialogOpen(true);
   };
@@ -156,6 +170,29 @@ function Employees() {
         ) : '—',
     },
     { field: 'core_process_name', headerName: 'Core Process', flex: 1, minWidth: 200 },
+    {
+      field: 'organisation_details',
+      headerName: 'Associated Organisation',
+      flex: 1.5,
+      minWidth: 200,
+      renderCell: ({ value }) => (
+        <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center' }}>
+          {value && value.length > 0 ? (
+            value.map((org) => (
+              <Chip
+                key={org.id}
+                label={org.name}
+                size="small"
+                color={org.is_base ? 'primary' : 'secondary'}
+                variant={org.is_base ? 'filled' : 'outlined'}
+              />
+            ))
+          ) : (
+            '—'
+          )}
+        </Box>
+      ),
+    },
     {
       field: 'status',
       headerName: 'Status',
@@ -278,6 +315,30 @@ function Employees() {
                   </MenuItem>
                 ))}
               </TextField>
+            </Grid>
+            <Grid item xs={12} sm={8}>
+              <FormControl fullWidth>
+                <InputLabel id="organisations-select-label">Organisations</InputLabel>
+                <Select
+                  labelId="organisations-select-label"
+                  multiple
+                  name="organisations"
+                  value={form.organisations || []}
+                  onChange={handleChange}
+                  input={<OutlinedInput label="Organisations" />}
+                  renderValue={(selected) => selected.map((id) => {
+                    const org = organisations.find((o) => o.id === id);
+                    return org ? org.name : id;
+                  }).join(', ')}
+                >
+                  {organisations.map((org) => (
+                    <MenuItem key={org.id} value={org.id}>
+                      <Checkbox checked={(form.organisations || []).indexOf(org.id) > -1} />
+                      <ListItemText primary={org.name} />
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
             </Grid>
           </Grid>
         </DialogContent>
