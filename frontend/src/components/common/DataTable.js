@@ -22,6 +22,7 @@ function DataTable({
   searchable = false,
   toolbar,
   pageSize = 10,
+  sx: dataGridSx,
   ...rest
 }) {
   const theme = useTheme();
@@ -142,6 +143,7 @@ function DataTable({
               letterSpacing: '0.05em',
             },
             '& .MuiDataGrid-row': {
+              cursor: rest.onRowClick ? 'pointer' : 'default',
               '&:hover': { backgroundColor: '#F8FAFC' },
               '&:last-child .MuiDataGrid-cell': { borderBottom: 'none' },
             },
@@ -157,6 +159,7 @@ function DataTable({
             },
             '& .MuiDataGrid-columnSeparator': { display: 'none' },
             '& .MuiTablePagination-root': { fontSize: 13, color: '#64748B' },
+            ...dataGridSx,
           }}
           {...rest}
         />

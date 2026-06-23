@@ -2,7 +2,7 @@ from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from apps.employees.models import Employee
-from apps.organisations.models import Organisation, OrganisationMemberProfile
+from apps.organisations.models import Organisation, OrganisationLocation, OrganisationMemberProfile
 from apps.users.models import User
 
 
@@ -115,6 +115,14 @@ class OrganisationTests(APITestCase):
         self.assertTrue(
             Employee.objects.filter(employee_id='EMP003', organisations=client_org).exists()
         )
+        self.assertFalse(
+            Employee.objects.filter(employee_id='EMP003', organisations__is_base=True).exists()
+        )
+
+        list_response = self.client.get(reverse('employee-list'))
+        self.assertEqual(list_response.status_code, 200)
+        employee_ids = [row['employee_id'] for row in list_response.data]
+        self.assertNotIn('EMP003', employee_ids)
 
     def test_client_member_profile_update_does_not_change_employee_record(self):
         base_org = Organisation.objects.create(
@@ -158,3 +166,49 @@ class OrganisationTests(APITestCase):
         employee.refresh_from_db()
         self.assertEqual(employee.official_email, 'agoel@ndtatlas.com')
         self.assertEqual(employee.designation, '')
+
+    def test_update_location(self):
+        Organisation.objects.create(
+            name='Base Org',
+            address='123 Corporate Street',
+            city='Mumbai',
+            country='India',
+            is_base=True,
+        )
+        client_org = Organisation.objects.create(
+            name='Client Org',
+            address='55 Client Lane',
+            city='Bengaluru',
+            country='India',
+            is_base=False,
+        )
+        location = OrganisationLocation.objects.create(
+            organisation=client_org,
+            name='Branch Office',
+            address='H32B, Saket',
+            city='New Delhi',
+            country='India',
+            notes='Old notes',
+        )
+
+        response = self.client.patch(
+            reverse('organisation-update-location', kwargs={'pk': client_org.id, 'location_id': location.id}),
+            {
+                'name': 'Head Office',
+                'address': 'H36A, Saket',
+                'city': 'New Delhi',
+                'country': 'India',
+                'notes': 'Main office',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['name'], 'Head Office')
+        self.assertEqual(response.data['address'], 'H36A, Saket')
+        self.assertEqual(response.data['notes'], 'Main office')
+
+        location.refresh_from_db()
+        self.assertEqual(location.name, 'Head Office')
+        self.assertEqual(location.address, 'H36A, Saket')
+        self.assertEqual(location.notes, 'Main office')

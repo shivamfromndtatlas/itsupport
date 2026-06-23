@@ -54,3 +54,27 @@ class OrganisationMemberProfile(models.Model):
 
     def __str__(self):
         return f'{self.employee} profile for {self.organisation}'
+
+
+class OrganisationLocation(models.Model):
+    organisation = models.ForeignKey(
+        Organisation,
+        on_delete=models.CASCADE,
+        related_name='locations',
+    )
+    name = models.CharField(max_length=200)
+    address = models.TextField(blank=True)
+    city = models.CharField(max_length=100, blank=True)
+    country = models.CharField(max_length=100, blank=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'organisation_locations'
+        ordering = ['name']
+        unique_together = ('organisation', 'name')
+
+    def __str__(self):
+        return f'{self.name} — {self.organisation.name}'
+

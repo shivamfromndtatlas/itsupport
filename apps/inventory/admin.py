@@ -1,5 +1,12 @@
 from django.contrib import admin
-from .models import AssetType, AssetAttribute, Asset, SoftwareLicense
+from .models import (
+    AssetType,
+    AssetAttribute,
+    Asset,
+    InstalledApplication,
+    InstalledAppReportImport,
+    SoftwareLicense,
+)
 
 
 @admin.register(AssetType)
@@ -31,3 +38,18 @@ class SoftwareLicenseAdmin(admin.ModelAdmin):
     list_filter = ('status',)
     search_fields = ('software_name', 'vendor')
     readonly_fields = ('created_at', 'updated_at')
+
+
+@admin.register(InstalledAppReportImport)
+class InstalledAppReportImportAdmin(admin.ModelAdmin):
+    list_display = ('file_name', 'imported_by', 'device_count', 'app_count', 'imported_at')
+    search_fields = ('file_name',)
+    readonly_fields = ('imported_at',)
+
+
+@admin.register(InstalledApplication)
+class InstalledApplicationAdmin(admin.ModelAdmin):
+    list_display = ('device_name', 'application_name', 'application_version', 'application_type', 'user_name')
+    list_filter = ('application_type',)
+    search_fields = ('device_name', 'application_name', 'application_package', 'application_version')
+    readonly_fields = ('created_at',)

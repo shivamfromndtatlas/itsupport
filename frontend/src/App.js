@@ -11,10 +11,12 @@ import Login from './pages/auth/Login';
 import Dashboard from './pages/dashboard/Dashboard';
 import UserManagement from './pages/users/UserManagement';
 import Employees from './pages/employees/Employees';
+import EmployeeDashboard from './pages/employees/EmployeeDashboard';
 import Onboarding from './pages/onboarding/Onboarding';
 import SOPManagement from './pages/sop/SOPManagement';
 import InventoryDashboard from './pages/inventory/InventoryDashboard';
 import Assets from './pages/inventory/Assets';
+import AssetDeviceDashboard from './pages/inventory/AssetDeviceDashboard';
 import InventoryConfig from './pages/inventory/InventoryConfig';
 import AssetAllocation from './pages/allocation/AssetAllocation';
 import Tickets from './pages/tickets/Tickets';
@@ -51,6 +53,14 @@ function App() {
             element={
               <RoleRoute roles={['super_admin', 'hr', 'it_specialist']}>
                 <Employees />
+              </RoleRoute>
+            }
+          />
+          <Route
+            path="/employees/:employeeId"
+            element={
+              <RoleRoute roles={['super_admin', 'hr', 'it_specialist']}>
+                <EmployeeDashboard />
               </RoleRoute>
             }
           />
@@ -96,6 +106,17 @@ function App() {
           />
 
           {/* Inventory Config – super_admin, it_specialist */}
+          {/* Asset Device Dashboard */}
+          <Route
+            path="/inventory/assets/:assetId"
+            element={
+              <RoleRoute roles={['super_admin', 'it_specialist']}>
+                <AssetDeviceDashboard />
+              </RoleRoute>
+            }
+          />
+
+          {/* Inventory Config */}
           <Route
             path="/inventory/config"
             element={

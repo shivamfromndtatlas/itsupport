@@ -1,7 +1,12 @@
 from django.test import TestCase
+from django.urls import reverse
+
 from apps.employees.models import Employee
-from apps.organisations.models import Organisation
+from apps.employees.base_org_assignment import skip_base_org_assignment
+from apps.organisations.models import Organisation, OrganisationMemberProfile
 from apps.employees.serializers import EmployeeSerializer
+from apps.users.models import User
+from rest_framework.test import APITestCase
 
 
 class EmployeeOrganisationTests(TestCase):
@@ -72,3 +77,123 @@ class EmployeeOrganisationTests(TestCase):
         # Check organisations changed from base_org to client_org
         self.assertEqual(updated_employee.organisations.count(), 1)
         self.assertEqual(updated_employee.organisations.first(), self.client_org)
+
+
+class EmployeeApiScopeTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email='admin@example.com',
+            password='password',
+            full_name='Super Admin',
+            role='super_admin',
+        )
+        self.client.force_authenticate(user=self.user)
+        self.base_org = Organisation.objects.create(
+            name='Base Org',
+            address='123 Base St',
+            city='Base City',
+            country='Base Country',
+            is_base=True,
+        )
+        self.client_org = Organisation.objects.create(
+            name='Client Org',
+            address='456 Client St',
+            city='Client City',
+            country='Client Country',
+            is_base=False,
+        )
+        self.base_employee = Employee.objects.create(
+            employee_id='EMP100',
+            full_name='Base Employee',
+            official_email='base@example.com',
+            status='active',
+        )
+        with skip_base_org_assignment():
+            self.client_employee = Employee.objects.create(
+                employee_id='EMP200',
+                full_name='Client Employee',
+                official_email='client@example.com',
+                status='active',
+            )
+        self.client_employee.organisations.add(self.client_org)
+
+    def test_employee_list_defaults_to_base_only(self):
+        response = self.client.get(reverse('employee-list'))
+
+        self.assertEqual(response.status_code, 200)
+        employee_ids = [row['employee_id'] for row in response.data]
+        self.assertIn('EMP100', employee_ids)
+        self.assertNotIn('EMP200', employee_ids)
+
+    def test_allocatable_employee_scope_includes_client_employees(self):
+        response = self.client.get(reverse('employee-list'), {'scope': 'allocatable'})
+
+        self.assertEqual(response.status_code, 200)
+        employee_ids = [row['employee_id'] for row in response.data]
+        self.assertIn('EMP100', employee_ids)
+        self.assertIn('EMP200', employee_ids)
+
+
+class EmployeeDashboardTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email='admin@example.com',
+            password='password',
+            full_name='Super Admin',
+            role='super_admin',
+        )
+        self.client.force_authenticate(user=self.user)
+        self.base_org = Organisation.objects.create(
+            name='Base Org',
+            address='123 Base St',
+            city='Base City',
+            country='Base Country',
+            is_base=True,
+        )
+        self.employee = Employee.objects.create(
+            employee_id='EMP300',
+            full_name='Dashboard Employee',
+            official_email='dash@example.com',
+            status='active',
+        )
+
+    def test_dashboard_works_without_member_profile(self):
+        response = self.client.get(reverse('employee-dashboard', kwargs={'pk': self.employee.id}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['employee_id'], 'EMP300')
+        self.assertEqual(response.data['base_email'], 'dash@example.com')
+
+    def test_dashboard_prefers_client_profile_values(self):
+        client_org = Organisation.objects.create(
+            name='Client Org',
+            address='456 Client St',
+            city='Client City',
+            country='Client Country',
+            is_base=False,
+        )
+        self.employee.organisations.add(self.base_org, client_org)
+        profile = OrganisationMemberProfile.objects.create(
+            organisation=client_org,
+            employee=self.employee,
+            employee_code='CL-001',
+            full_name='Dashboard Employee Client',
+            alias_name='Client Alias',
+            official_email='clientdash@example.com',
+            designation='Client Lead',
+            core_process_code='02BDP',
+            date_of_joining='2024-01-15',
+            status='inactive',
+        )
+
+        response = self.client.get(reverse('employee-dashboard', kwargs={'pk': self.employee.id}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['employee_id'], 'CL-001')
+        self.assertEqual(response.data['full_name'], 'Dashboard Employee Client')
+        self.assertEqual(response.data['alias_name'], 'Client Alias')
+        self.assertEqual(response.data['official_email'], 'clientdash@example.com')
+        self.assertEqual(response.data['designation'], 'Client Lead')
+        self.assertEqual(response.data['core_process_name'], 'Business Development Process')
+        self.assertEqual(response.data['status'], 'inactive')
+        self.assertEqual(response.data['date_of_joining'], '2024-01-15')

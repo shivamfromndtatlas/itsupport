@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from apps.organisations.models import Organisation, OrganisationMemberProfile
+from apps.organisations.models import Organisation, OrganisationLocation, OrganisationMemberProfile
 from apps.employees.models import Employee
 
 CORE_PROCESS_MAP = dict(Employee.CORE_PROCESS_CHOICES)
@@ -138,3 +138,20 @@ class OrganisationMemberProfileSerializer(serializers.Serializer):
             if 'employee_id' not in member or 'full_name' not in member or 'official_email' not in member:
                 raise serializers.ValidationError('New members must include employee_id, full_name, and official_email.')
         return value
+
+
+class OrganisationLocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrganisationLocation
+        fields = [
+            'id',
+            'organisation',
+            'name',
+            'address',
+            'city',
+            'country',
+            'notes',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'organisation', 'created_at', 'updated_at']

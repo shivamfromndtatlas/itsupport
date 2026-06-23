@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Box,
   Tabs,
@@ -68,6 +69,7 @@ function TabPanel({ value, index, children }) {
 function Assets() {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
+  const navigate = useNavigate();
   const [tab, setTab] = useState(0);
 
   // Hardware
@@ -91,7 +93,7 @@ function Assets() {
   const [assetTypes, setAssetTypes] = useState([]);
   const [assetAttributes, setAssetAttributes] = useState([]);
   const [licenseTypeChoices, setLicenseTypeChoices] = useState([]);
-  const [hardwareAssetTypeFilter, setHardwareAssetTypeFilter] = useState([]);
+  const [hardwareAssetTypeFilter] = useState([]);
   const [softwareAssetTypeFilter, setSoftwareAssetTypeFilter] = useState([]);
   const [selectedHwTypeName, setSelectedHwTypeName] = useState('');
 
@@ -314,7 +316,7 @@ function Assets() {
     setAssetDialog(true);
   };
 
-  const openEditAsset = (row) => {
+  const openEditAsset = useCallback((row) => {
     setEditAsset(row);
     setAssetForm({
       asset_type: row.asset_type_name || row.asset_type || '',
@@ -330,7 +332,7 @@ function Assets() {
       },
     });
     setAssetDialog(true);
-  };
+  }, []);
 
   const handleSaveAsset = async () => {
     setSavingAsset(true);
@@ -417,7 +419,7 @@ function Assets() {
     }
   };
 
-  const assetColumns = [
+  const assetColumns = useMemo(() => [
     { field: 'asset_id', headerName: 'Asset ID', width: 130 },
     { field: 'asset_type_name', headerName: 'Type', width: 120 },
     {
@@ -441,19 +443,19 @@ function Assets() {
       renderCell: ({ row }) => (
         <Box>
           <Tooltip title="Edit">
-            <IconButton size="small" onClick={() => openEditAsset(row)}>
+            <IconButton size="small" onClick={(e) => { e.stopPropagation(); openEditAsset(row); }}>
               <EditIcon fontSize="small" />
             </IconButton>
           </Tooltip>
           <Tooltip title="Delete">
-            <IconButton size="small" color="error" onClick={() => setConfirmAsset({ open: true, row })}>
+            <IconButton size="small" color="error" onClick={(e) => { e.stopPropagation(); setConfirmAsset({ open: true, row }); }}>
               <DeleteIcon fontSize="small" />
             </IconButton>
           </Tooltip>
         </Box>
       ),
     },
-  ];
+  ], [openEditAsset]);
 
   const licenseColumns = [
     { field: 'software_name', headerName: 'Software Name', flex: 1, minWidth: 150 },
@@ -550,7 +552,7 @@ function Assets() {
                       const mapped = { ...row };
                       relevantAttrs.forEach((attr) => {
                         const key = `attr_${attr.id}`;
-                        mapped[key] = values[attr.name] ?? values[String(attr.id)] ?? values[attr.name.toLowerCase()] ?? '';
+                        mapped[key] = values[String(attr.id)] ?? values[attr.name] ?? values[attr.name.toLowerCase()] ?? '';
                       });
                       return mapped;
                     });
@@ -580,6 +582,7 @@ function Assets() {
                     return [...base.slice(0, base.length - 1), ...attrCols, base[base.length - 1]];
                   }, [assetColumns, assetAttributes, assetTypes, selectedHwTypeName])}
                   loading={assetLoading}
+                  onRowClick={({ row }) => navigate(`/inventory/assets/${row.id}`)}
                   onAdd={openAddAsset}
                   addLabel="Add Asset"
                   searchable

@@ -2,6 +2,8 @@ from django.db import models
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
+from .base_org_assignment import should_assign_base_org
+
 
 class Employee(models.Model):
     STATUS_CHOICES = [
@@ -38,6 +40,7 @@ class Employee(models.Model):
     )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
     date_of_joining = models.DateField(null=True, blank=True)
+    date_of_separation = models.DateField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -51,6 +54,9 @@ class Employee(models.Model):
 
 @receiver(post_save, sender=Employee)
 def ensure_base_organisation_membership(sender, instance, created, **kwargs):
+    if not should_assign_base_org():
+        return
+
     if instance.organisations.count() == 0:
         from apps.organisations.models import Organisation
 

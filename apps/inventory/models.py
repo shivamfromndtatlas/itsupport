@@ -66,6 +66,59 @@ class Asset(models.Model):
     def __str__(self):
         return f'{self.asset_id} - {self.asset_type.name}'
 
+    def save(self, *args, **kwargs):
+        # 1. Handle Django's update_fields to include synced fields
+        if 'update_fields' in kwargs and kwargs['update_fields'] is not None:
+            update_fields = list(kwargs['update_fields'])
+            if 'status' in update_fields and 'attribute_values' not in update_fields:
+                update_fields.append('attribute_values')
+            if 'attribute_values' in update_fields and 'status' not in update_fields:
+                update_fields.append('status')
+            kwargs['update_fields'] = update_fields
+
+        # Ensure attribute_values is a dict
+        if self.attribute_values is None:
+            self.attribute_values = {}
+
+        # 2. Sync from attribute_values to core status
+        # Check ID "10" first, then key name "Availability Status"
+        avail_status = self.attribute_values.get("10") or self.attribute_values.get("Availability Status")
+        if avail_status:
+            status_map = {
+                'In Stock': 'available',
+                'Reserved Stock': 'available',
+                'Issued': 'assigned',
+                'Under Repair': 'maintenance',
+                'Retired': 'retired'
+            }
+            mapped_status = status_map.get(avail_status)
+            if mapped_status:
+                self.status = mapped_status
+                # Keep both keys in sync in attribute_values
+                self.attribute_values["10"] = avail_status
+                self.attribute_values["Availability Status"] = avail_status
+
+        # 3. Sync from core status to attribute_values
+        core_to_avail = {
+            'available': 'In Stock',
+            'assigned': 'Issued',
+            'maintenance': 'Under Repair',
+            'retired': 'Retired'
+        }
+        if self.status:
+            current_avail = self.attribute_values.get("10") or self.attribute_values.get("Availability Status")
+            # If core status is available, current_avail could be In Stock or Reserved Stock
+            if self.status == 'available' and current_avail in ('In Stock', 'Reserved Stock'):
+                pass
+            else:
+                expected_avail = core_to_avail.get(self.status)
+                if expected_avail and current_avail != expected_avail:
+                    self.attribute_values["10"] = expected_avail
+                    self.attribute_values["Availability Status"] = expected_avail
+
+        super().save(*args, **kwargs)
+
+
 
 class SoftwareLicense(models.Model):
     STATUS_CHOICES = [
@@ -101,3 +154,51 @@ class SoftwareLicense(models.Model):
 
     def __str__(self):
         return f'{self.software_name} ({self.available_seats}/{self.total_seats} seats)'
+
+
+class InstalledAppReportImport(models.Model):
+    file_name = models.CharField(max_length=255)
+    imported_by = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='installed_app_report_imports',
+    )
+    imported_at = models.DateTimeField(auto_now_add=True)
+    device_count = models.PositiveIntegerField(default=0)
+    app_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = 'installed_app_report_imports'
+        ordering = ['-imported_at']
+
+    def __str__(self):
+        return f'{self.file_name} ({self.app_count} apps)'
+
+
+class InstalledApplication(models.Model):
+    report_import = models.ForeignKey(
+        InstalledAppReportImport,
+        on_delete=models.CASCADE,
+        related_name='applications',
+    )
+    device_name = models.CharField(max_length=200)
+    normalized_device_name = models.CharField(max_length=200, db_index=True)
+    application_package = models.TextField(blank=True)
+    application_name = models.TextField()
+    application_type = models.CharField(max_length=100, blank=True)
+    user_name = models.CharField(max_length=200, blank=True)
+    application_version = models.CharField(max_length=200, blank=True)
+    signature_key_hash = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'installed_applications'
+        indexes = [
+            models.Index(fields=['normalized_device_name']),
+        ]
+        ordering = ['application_name']
+
+    def __str__(self):
+        return f'{self.device_name} - {self.application_name}'

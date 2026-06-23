@@ -1,6 +1,8 @@
 from rest_framework import serializers
 
 from apps.organisations.models import Organisation
+from apps.inventory.serializers import AssetSerializer
+from apps.allocation.models import AssetAllocation
 from .models import Employee
 
 CORE_PROCESS_MAP = dict(Employee.CORE_PROCESS_CHOICES)
@@ -15,9 +17,48 @@ class LineManagerSerializer(serializers.ModelSerializer):
 
 
 class OrganisationReferenceSerializer(serializers.ModelSerializer):
+    logo = serializers.ImageField(read_only=True)
+
     class Meta:
         model = Organisation
-        fields = ['id', 'name', 'is_base']
+        fields = ['id', 'name', 'logo', 'is_base']
+
+
+class EmployeeAssetAllocationSerializer(serializers.ModelSerializer):
+    asset_detail = AssetSerializer(source='asset', read_only=True)
+    assigned_by_name = serializers.CharField(source='assigned_by.full_name', read_only=True)
+    recovered_by_name = serializers.CharField(source='recovered_by.full_name', read_only=True)
+
+    class Meta:
+        model = AssetAllocation
+        fields = [
+            'id',
+            'asset',
+            'asset_detail',
+            'assigned_date',
+            'recovered_date',
+            'status',
+            'notes',
+            'assigned_by',
+            'assigned_by_name',
+            'recovered_by',
+            'recovered_by_name',
+            'created_at',
+        ]
+        read_only_fields = [
+            'id',
+            'asset',
+            'asset_detail',
+            'assigned_date',
+            'recovered_date',
+            'status',
+            'notes',
+            'assigned_by',
+            'assigned_by_name',
+            'recovered_by',
+            'recovered_by_name',
+            'created_at',
+        ]
 
 
 class EmployeeSerializer(serializers.ModelSerializer):
@@ -46,6 +87,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'organisation_details',
             'status',
             'date_of_joining',
+            'date_of_separation',
             'created_at',
             'updated_at',
         ]

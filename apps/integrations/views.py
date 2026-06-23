@@ -44,6 +44,7 @@ PLATFORM_KEYS = (
     'OperatingSystem',
     'OperatingSystemName',
     'PlatformName',
+    'PlatformType',
 )
 
 MODEL_KEYS = (
@@ -56,6 +57,55 @@ MODEL_KEYS = (
     'ProductName',
     'HardwareModel',
     'SystemModel',
+)
+
+SYSTEM_TAG_KEYS = (
+    'SystemTag',
+    'System Tag',
+    'AssetTag',
+    'Asset Tag',
+    'DeviceTag',
+    'Device Tag',
+    'ComputerName',
+    'Computer Name',
+)
+
+PROCESSOR_KEYS = (
+    'Processor',
+    'CPU',
+    'Cpu',
+    'ProcessorName',
+    'CPUName',
+)
+
+RAM_KEYS = (
+    'RAM',
+    'Ram',
+    'Memory',
+    'TotalMemory',
+    'TotalRAM',
+    'PhysicalMemory',
+    'TotalPhysicalMemory',
+)
+
+STORAGE_KEYS = (
+    'Storage',
+    'Disk',
+    'HardDisk',
+    'TotalStorage',
+    'TotalDiskSpace',
+    'StorageMemoryTotal',
+    'MemoryStorageAvailable',
+    'DrivesStorageMemory',
+)
+
+MANUFACTURER_KEYS = (
+    'Manufacturer',
+    'Make',
+    'OEM',
+    'Vendor',
+    'DeviceManufacture',
+    'DeviceManufacturer',
 )
 
 SERIAL_KEYS = (
@@ -88,6 +138,7 @@ GROUP_DEVICE_IDS = (
     'Windows',
     'Windows - India',
     'Windows - US',
+    'SureMDM',
     'Android',
 )
 
@@ -217,6 +268,30 @@ def split_platform_model(value):
     return platform, model
 
 
+def format_bytes(value):
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return value
+
+    units = ('B', 'KB', 'MB', 'GB', 'TB')
+    unit_index = 0
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024
+        unit_index += 1
+    if unit_index == 0:
+        return f'{int(size)} {units[unit_index]}'
+    return f'{size:.1f} {units[unit_index]}'
+
+
+def normalize_storage_value(value):
+    if isinstance(value, str) and ':' in value:
+        parts = value.split()
+        if len(parts) >= 3:
+            return f'{parts[0]} {format_bytes(parts[2])}'
+    return format_bytes(value)
+
+
 def normalize_category(value):
     if not value:
         return 'Uncategorized'
@@ -239,8 +314,11 @@ def normalize_device(device, category=None):
     device_id = device_value(device, 'DeviceID', 'DeviceId', 'ID', 'id')
     name = device_value(device, *NAME_KEYS)
     serial = device_value(device, *SERIAL_KEYS)
+    system_tag = device_value(device, *SYSTEM_TAG_KEYS)
     platform = device_value(device, *PLATFORM_KEYS)
     model = device_value(device, *MODEL_KEYS)
+    ram = device_value(device, *RAM_KEYS)
+    storage = device_value(device, *STORAGE_KEYS)
     platform_model = device_value(device, 'Platform / Model', 'PlatformModel', 'PlatformAndModel')
     inferred_platform, inferred_model = split_platform_model(platform_model or platform or model)
     last_seen = device_value(device, *LAST_SEEN_KEYS)
@@ -250,10 +328,15 @@ def normalize_device(device, category=None):
         'suremdm_device_id': str(device_id),
         'name': name,
         'serial_number': serial,
+        'system_tag': system_tag,
         'platform': platform or inferred_platform,
         'model': model or inferred_model,
         'category': category,
         'last_seen': last_seen,
+        'processor': device_value(device, *PROCESSOR_KEYS),
+        'ram': format_bytes(ram) if ram else '',
+        'storage': normalize_storage_value(storage) if storage else '',
+        'manufacturer': device_value(device, *MANUFACTURER_KEYS),
         'raw': device,
     }
 
@@ -261,6 +344,7 @@ def normalize_device(device, category=None):
 def device_identity(device):
     return (
         device.get('suremdm_device_id')
+        or device.get('system_tag')
         or device.get('serial_number')
         or device.get('name')
         or ''
@@ -292,6 +376,9 @@ def normalize_devices_with_groups(client, limit=500):
                     by_identity[identity]['platform'] = group_device['platform']
                 if group_device['model']:
                     by_identity[identity]['model'] = group_device['model']
+                for field in ('system_tag', 'processor', 'ram', 'storage', 'manufacturer'):
+                    if group_device.get(field):
+                        by_identity[identity][field] = group_device[field]
             elif identity:
                 devices.append(group_device)
                 by_identity[identity] = group_device
@@ -444,10 +531,15 @@ class SureMDMViewSet(ViewSet):
                     'attribute_values': {
                         'suremdm_device_id': device['suremdm_device_id'],
                         'device_name': device['name'],
+                        'system_tag': device['system_tag'],
                         'platform': device['platform'],
                         'model': device['model'],
                         'category': device['category'],
                         'last_seen': device['last_seen'],
+                        'processor': device['processor'],
+                        'ram': device['ram'],
+                        'storage': device['storage'],
+                        'manufacturer': device['manufacturer'],
                     },
                 }
                 _, was_created = Asset.objects.update_or_create(asset_id=asset_id, defaults=defaults)

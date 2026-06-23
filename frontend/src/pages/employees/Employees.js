@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+﻿import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Box,
   Dialog,
@@ -22,10 +22,13 @@ import {
   OutlinedInput,
   Checkbox,
   ListItemText,
+  Stack,
+  Typography,
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DataTable from '../../components/common/DataTable';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
+import EmployeeLink from '../../components/common/EmployeeLink';
 import api from '../../api/axios';
 import { useAuth } from '../../context/AuthContext';
 
@@ -72,15 +75,18 @@ function Employees() {
   const [saving, setSaving] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState({ open: false, row: null });
   const [snack, setSnack] = useState({ open: false, msg: '', severity: 'success' });
+  const [selectedOrganisationId, setSelectedOrganisationId] = useState('');
 
   const showSnack = (msg, severity = 'success') =>
     setSnack({ open: true, msg, severity });
 
-  const fetchEmployees = useCallback(async () => {
+  const fetchEmployees = useCallback(async (organisationId = '') => {
     setLoading(true);
     try {
+      const params = new URLSearchParams({ scope: 'all' });
+      if (organisationId) params.set('organisation_id', organisationId);
       const [empRes, orgRes] = await Promise.all([
-        api.get('/employees/'),
+        api.get(`/employees/?${params.toString()}`),
         api.get('/organisations/'),
       ]);
       const empData = Array.isArray(empRes.data) ? empRes.data : empRes.data.results || [];
@@ -97,6 +103,22 @@ function Employees() {
   useEffect(() => {
     fetchEmployees();
   }, [fetchEmployees]);
+
+  const selectedOrganisation = useMemo(
+    () => organisations.find((org) => String(org.id) === String(selectedOrganisationId)) || null,
+    [organisations, selectedOrganisationId]
+  );
+
+  const handleOrganisationFilter = (orgId) => {
+    const nextId = String(selectedOrganisationId) === String(orgId) ? '' : String(orgId);
+    setSelectedOrganisationId(nextId);
+    fetchEmployees(nextId);
+  };
+
+  const clearOrganisationFilter = () => {
+    setSelectedOrganisationId('');
+    fetchEmployees('');
+  };
 
   const openAdd = () => {
     setEditRow(null);
@@ -156,7 +178,13 @@ function Employees() {
 
   const columns = [
     { field: 'employee_id', headerName: 'Employee ID', width: 130 },
-    { field: 'full_name', headerName: 'Full Name', flex: 1, minWidth: 150 },
+    {
+      field: 'full_name',
+      headerName: 'Full Name',
+      flex: 1,
+      minWidth: 150,
+      renderCell: ({ row, value }) => <EmployeeLink employeeId={row.id}>{value}</EmployeeLink>,
+    },
     { field: 'alias_name', headerName: 'Alias Name', flex: 1, minWidth: 130 },
     { field: 'official_email', headerName: 'Email', flex: 1.2, minWidth: 180 },
     { field: 'contact_number', headerName: 'Contact', width: 140 },
@@ -185,6 +213,8 @@ function Employees() {
                 size="small"
                 color={org.is_base ? 'primary' : 'secondary'}
                 variant={org.is_base ? 'filled' : 'outlined'}
+                clickable
+                onClick={() => handleOrganisationFilter(org.id)}
               />
             ))
           ) : (
@@ -229,6 +259,16 @@ function Employees() {
 
   return (
     <Box>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
+        <Typography variant="body2" color="text.secondary">
+          {selectedOrganisation ? `Showing employees for ${selectedOrganisation.name}` : 'Showing all employees'}
+        </Typography>
+        {selectedOrganisation && (
+          <Button variant="outlined" size="small" onClick={clearOrganisationFilter}>
+            Clear filter
+          </Button>
+        )}
+      </Stack>
       <DataTable
         title="Employees"
         rows={rows}
@@ -345,7 +385,7 @@ function Employees() {
         <DialogActions>
           <Button onClick={() => setDialogOpen(false)} sx={{ color: 'text.secondary' }}>Cancel</Button>
           <Button variant="contained" onClick={handleSave} disabled={saving}>
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? 'Savingâ€¦' : 'Save'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -373,3 +413,5 @@ function Employees() {
 }
 
 export default Employees;
+
+

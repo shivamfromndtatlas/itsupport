@@ -26,6 +26,7 @@ import PrintIcon from '@mui/icons-material/Print';
 import { QRCodeSVG } from 'qrcode.react';
 import DataTable from '../../components/common/DataTable';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
+import EmployeeLink from '../../components/common/EmployeeLink';
 import api from '../../api/axios';
 
 function TabPanel({ value, index, children }) {
@@ -73,11 +74,19 @@ function AssetAllocation() {
   const [availableLicenses, setAvailableLicenses] = useState([]);
   const [assetTypes, setAssetTypes] = useState([]);
   const [assetTypeFilter, setAssetTypeFilter] = useState([]);
+  const [selectedCategory, setSelectedCategory] = useState('');
 
   const assetTypeOptions = useMemo(() => {
     const filterKey = tab === 0 ? 'hardware' : 'software';
     return assetTypes.filter((type) => type.asset_type === filterKey);
   }, [assetTypes, tab]);
+
+  const filteredAvailableAssets = useMemo(() => {
+    if (!selectedCategory) return [];
+    return availableAssets.filter((asset) => {
+      return String(asset.asset_type) === String(selectedCategory);
+    });
+  }, [availableAssets, selectedCategory]);
 
   const [snack, setSnack] = useState({ open: false, msg: '', severity: 'success' });
   const qrRef = useRef();
@@ -106,7 +115,7 @@ function AssetAllocation() {
       const [hwRes, swRes, empRes, assetRes, licRes, typeRes] = await Promise.all([
         api.get('/allocation/assets/').catch(() => ({ data: [] })),
         api.get('/allocation/licenses/').catch(() => ({ data: [] })),
-        api.get('/employees/').catch(() => ({ data: [] })),
+        api.get('/employees/?scope=allocatable').catch(() => ({ data: [] })),
         api.get('/inventory/assets/?status=available&source=portal').catch(() => ({ data: [] })),
         api.get('/inventory/software-licenses/').catch(() => ({ data: [] })),
         api.get('/inventory/asset-types/').catch(() => ({ data: [] })),
@@ -264,7 +273,11 @@ function AssetAllocation() {
       field: 'employee_detail',
       headerName: 'Employee Name',
       flex: 1,
-      renderCell: ({ row }) => row.employee_detail?.full_name || row.employee_name || row.employee || '--',
+      renderCell: ({ row }) => {
+        const employeeId = row.employee_detail?.id || row.employee || row.employee_detail?.employee?.id;
+        const label = row.employee_detail?.full_name || row.employee_name || row.employee || '--';
+        return <EmployeeLink employeeId={employeeId}>{label}</EmployeeLink>;
+      },
     },
     { field: 'assigned_date', headerName: 'Assigned Date', width: 140 },
     {
@@ -323,8 +336,11 @@ function AssetAllocation() {
       field: 'employee_detail',
       headerName: 'Employee',
       flex: 1,
-      renderCell: ({ row }) =>
-        row.employee_detail?.full_name || row.employee_name || row.employee || '--',
+      renderCell: ({ row }) => {
+        const employeeId = row.employee_detail?.id || row.employee || row.employee_detail?.employee?.id;
+        const label = row.employee_detail?.full_name || row.employee_name || row.employee || '--';
+        return <EmployeeLink employeeId={employeeId}>{label}</EmployeeLink>;
+      },
     },
     { field: 'assigned_date', headerName: 'Assigned Date', width: 140 },
     {
@@ -391,7 +407,7 @@ function AssetAllocation() {
               rows={filteredHwAllocations}
               columns={hwColumns}
               loading={hwLoading}
-              onAdd={() => { setHwForm(EMPTY_HW_FORM); setHwDialog(true); }}
+              onAdd={() => { setHwForm(EMPTY_HW_FORM); setSelectedCategory(''); setHwDialog(true); }}
               addLabel="Assign Asset"
               searchable
               toolbar={
@@ -466,16 +482,42 @@ function AssetAllocation() {
             <Grid item xs={12}>
               <TextField
                 select
+                label="Asset Category"
+                fullWidth
+                value={selectedCategory}
+                onChange={(e) => {
+                  setSelectedCategory(e.target.value);
+                  setHwForm({ ...hwForm, asset: '' });
+                }}
+              >
+                <MenuItem value="">Select Category</MenuItem>
+                {assetTypeOptions.map((type) => (
+                  <MenuItem key={type.id} value={type.id}>
+                    {type.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                select
                 label="Available Asset"
                 fullWidth
                 value={hwForm.asset}
                 onChange={(e) => setHwForm({ ...hwForm, asset: e.target.value })}
+                disabled={!selectedCategory}
               >
-                {availableAssets.map((a) => (
-                  <MenuItem key={a.id} value={a.id}>
-                    {formatAssetLabel(a)}
+                {filteredAvailableAssets.length === 0 ? (
+                  <MenuItem disabled value="">
+                    {selectedCategory ? 'No available assets in this category' : 'Select a category first'}
                   </MenuItem>
-                ))}
+                ) : (
+                  filteredAvailableAssets.map((a) => (
+                    <MenuItem key={a.id} value={a.id}>
+                      {formatAssetLabel(a)}
+                    </MenuItem>
+                  ))
+                )}
               </TextField>
             </Grid>
             <Grid item xs={12} sm={6}>
