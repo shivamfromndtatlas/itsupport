@@ -2,6 +2,7 @@ import io
 
 import qrcode
 from django.core.files.base import ContentFile
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -95,6 +96,22 @@ class AssetAllocationViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Delete an allocation. If it is still active, release the asset back to available.
+        """
+        with transaction.atomic():
+            allocation = self.get_object()
+            asset = allocation.asset
+            should_release_asset = allocation.status == 'active'
+            allocation.delete()
+
+            if should_release_asset:
+                asset.status = 'available'
+                asset.save(update_fields=['status'])
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class LicenseAllocationViewSet(viewsets.ModelViewSet):

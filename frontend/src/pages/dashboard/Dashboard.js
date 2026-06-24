@@ -257,7 +257,7 @@ function Dashboard() {
       {/* Charts */}
       {canSeeAssets && (
         <Grid container spacing={2.5}>
-          <Grid item xs={12} lg={6}>
+          <Grid item xs={12} lg={7}>
             <Card sx={{ p: 2.5 }}>
               <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5 }}>
                 Asset Distribution by Type
@@ -289,7 +289,7 @@ function Dashboard() {
             </Card>
           </Grid>
 
-          <Grid item xs={12} lg={6}>
+          <Grid item xs={12} lg={5}>
             <Card sx={{ p: 2.5 }}>
               <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5 }}>
                 MDM Systems by Category

@@ -80,6 +80,10 @@ function Assets() {
   const [assetForm, setAssetForm] = useState(EMPTY_ASSET);
   const [savingAsset, setSavingAsset] = useState(false);
   const [confirmAsset, setConfirmAsset] = useState({ open: false, row: null });
+  const [bulkDialog, setBulkDialog] = useState(false);
+  const [bulkAssetTypeIds, setBulkAssetTypeIds] = useState([]);
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // Software
   const [licenses, setLicenses] = useState([]);
@@ -316,6 +320,12 @@ function Assets() {
     setAssetDialog(true);
   };
 
+  const openBulkUpload = () => {
+    setBulkAssetTypeIds([]);
+    setBulkFile(null);
+    setBulkDialog(true);
+  };
+
   const openEditAsset = useCallback((row) => {
     setEditAsset(row);
     setAssetForm({
@@ -363,6 +373,62 @@ function Assets() {
       showSnack('Delete failed.', 'error');
     } finally {
       setConfirmAsset({ open: false, row: null });
+    }
+  };
+
+  const downloadBulkTemplate = async () => {
+    try {
+      setBulkBusy(true);
+      const params = new URLSearchParams();
+      if (bulkAssetTypeIds.length) {
+        params.set('asset_type_ids', bulkAssetTypeIds.join(','));
+      }
+      const res = await api.get(`/inventory/assets/bulk-template/${params.toString() ? `?${params.toString()}` : ''}`, {
+        responseType: 'blob',
+      });
+      const blob = new Blob([res.data], {
+        type: res.headers['content-type'] || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const link = document.createElement('a');
+      const url = window.URL.createObjectURL(blob);
+      link.href = url;
+      link.download = 'asset-bulk-upload-template.xlsx';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      showSnack('Template downloaded.');
+    } catch (err) {
+      showSnack(err.response?.data?.detail || 'Template download failed.', 'error');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const handleBulkUpload = async () => {
+    if (!bulkFile) {
+      showSnack('Choose an Excel file first.', 'error');
+      return;
+    }
+    try {
+      setBulkBusy(true);
+      const formData = new FormData();
+      formData.append('file', bulkFile);
+      const res = await api.post('/inventory/assets/bulk-upload/', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      showSnack(`Bulk upload complete: ${res.data.created || 0} created, ${res.data.updated || 0} updated.`);
+      setBulkDialog(false);
+      setBulkFile(null);
+      fetchAssets();
+    } catch (err) {
+      const errors = err.response?.data?.errors;
+      showSnack(
+        errors?.length ? errors[0] : err.response?.data?.detail || 'Bulk upload failed.',
+        'error'
+      );
+    } finally {
+      setBulkBusy(false);
     }
   };
 
@@ -586,6 +652,11 @@ function Assets() {
                   onAdd={openAddAsset}
                   addLabel="Add Asset"
                   searchable
+                  toolbar={
+                    <Button variant="outlined" onClick={openBulkUpload}>
+                      Bulk Upload
+                    </Button>
+                  }
                 />
               </Box>
             </Box>
@@ -619,6 +690,61 @@ function Assets() {
           </TabPanel>
         </Box>
       </Paper>
+
+      <Dialog open={bulkDialog} onClose={() => setBulkDialog(false)} maxWidth="sm" fullWidth fullScreen={fullScreen}>
+        <DialogTitle>Bulk Upload Assets</DialogTitle>
+        <DialogContent sx={{ pt: '12px !important' }}>
+          <Grid container spacing={2}>
+            <Grid item xs={12}>
+              <TextField
+                select
+                label="Asset Types for Template"
+                fullWidth
+                value={bulkAssetTypeIds}
+                onChange={(e) => setBulkAssetTypeIds(typeof e.target.value === 'string' ? e.target.value.split(',') : e.target.value)}
+                SelectProps={{
+                  multiple: true,
+                  renderValue: (selected) => {
+                    const names = assetTypes
+                      .filter((type) => selected.includes(String(type.id)))
+                      .map((type) => type.name);
+                    return names.length ? names.join(', ') : 'All asset types';
+                  },
+                }}
+                helperText="Leave blank to generate a template for all asset types."
+              >
+                {assetTypes.map((type) => (
+                  <MenuItem key={type.id} value={String(type.id)}>
+                    {type.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12}>
+              <Button variant="outlined" onClick={downloadBulkTemplate} disabled={bulkBusy} fullWidth>
+                Download Excel Template
+              </Button>
+            </Grid>
+            <Grid item xs={12}>
+              <Button variant="outlined" component="label" fullWidth>
+                {bulkFile ? bulkFile.name : 'Choose Filled Excel File'}
+                <input
+                  hidden
+                  type="file"
+                  accept=".xlsx"
+                  onChange={(e) => setBulkFile(e.target.files?.[0] || null)}
+                />
+              </Button>
+            </Grid>
+          </Grid>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setBulkDialog(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleBulkUpload} disabled={bulkBusy}>
+            {bulkBusy ? 'Uploading...' : 'Upload Assets'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Add/Edit Asset Dialog */}
       <Dialog open={assetDialog} onClose={() => setAssetDialog(false)} maxWidth="sm" fullWidth fullScreen={fullScreen}>

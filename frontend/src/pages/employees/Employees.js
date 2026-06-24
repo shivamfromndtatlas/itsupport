@@ -14,6 +14,7 @@ import {
   Snackbar,
   Alert,
   Grid,
+  Avatar,
   useMediaQuery,
   useTheme,
   FormControl,
@@ -60,6 +61,49 @@ const EMPTY_FORM = {
   organisations: [],
 };
 
+const getOrgInitials = (name = '') =>
+  name
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2) || 'OR';
+
+const getLogoUrl = (logo) => {
+  if (!logo) return '';
+  if (/^https?:\/\//i.test(logo)) return logo;
+  const apiHost = process.env.REACT_APP_API_HOST || window.location.hostname || 'localhost';
+  return `http://${apiHost}:8000${logo.startsWith('/') ? logo : `/${logo}`}`;
+};
+
+function OrgChip({ org, onClick }) {
+  const logoUrl = getLogoUrl(org.logo);
+
+  return (
+    <Chip
+      size="small"
+      clickable
+      onClick={onClick}
+      avatar={
+        logoUrl ? (
+          <Avatar src={logoUrl} alt={org.name} sx={{ width: 30, height: 30 }} />
+        ) : (
+          <Avatar sx={{ width: 30, height: 30, fontSize: 11, bgcolor: org.is_base ? 'primary.main' : 'secondary.main' }}>
+            {getOrgInitials(org.name)}
+          </Avatar>
+        )
+      }
+      sx={{
+        height: 38,
+        minWidth: 58,
+        '& .MuiChip-avatar': { width: 30, height: 30, marginLeft: 0.5 },
+        '& .MuiChip-label': { px: 0.75 },
+      }}
+    />
+  );
+}
+
 function Employees() {
   const { hasRole } = useAuth();
   const theme = useTheme();
@@ -76,15 +120,17 @@ function Employees() {
   const [confirmDialog, setConfirmDialog] = useState({ open: false, row: null });
   const [snack, setSnack] = useState({ open: false, msg: '', severity: 'success' });
   const [selectedOrganisationId, setSelectedOrganisationId] = useState('');
+  const [selectedCoreProcessCode, setSelectedCoreProcessCode] = useState('');
 
   const showSnack = (msg, severity = 'success') =>
     setSnack({ open: true, msg, severity });
 
-  const fetchEmployees = useCallback(async (organisationId = '') => {
+  const fetchEmployees = useCallback(async (filters = {}) => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ scope: 'all' });
-      if (organisationId) params.set('organisation_id', organisationId);
+      if (filters.organisationId) params.set('organisation_id', filters.organisationId);
+      if (filters.coreProcessCode) params.set('core_process_code', filters.coreProcessCode);
       const [empRes, orgRes] = await Promise.all([
         api.get(`/employees/?${params.toString()}`),
         api.get('/organisations/'),
@@ -112,12 +158,29 @@ function Employees() {
   const handleOrganisationFilter = (orgId) => {
     const nextId = String(selectedOrganisationId) === String(orgId) ? '' : String(orgId);
     setSelectedOrganisationId(nextId);
-    fetchEmployees(nextId);
+    fetchEmployees({ organisationId: nextId, coreProcessCode: selectedCoreProcessCode });
   };
 
   const clearOrganisationFilter = () => {
     setSelectedOrganisationId('');
-    fetchEmployees('');
+    fetchEmployees({ coreProcessCode: selectedCoreProcessCode });
+  };
+
+  const handleOrganisationSelect = (event) => {
+    const nextId = event.target.value || '';
+    setSelectedOrganisationId(nextId);
+    fetchEmployees({ organisationId: nextId, coreProcessCode: selectedCoreProcessCode });
+  };
+
+  const handleCoreProcessSelect = (event) => {
+    const nextCode = event.target.value || '';
+    setSelectedCoreProcessCode(nextCode);
+    fetchEmployees({ organisationId: selectedOrganisationId, coreProcessCode: nextCode });
+  };
+
+  const clearCoreProcessFilter = () => {
+    setSelectedCoreProcessCode('');
+    fetchEmployees({ organisationId: selectedOrganisationId });
   };
 
   const openAdd = () => {
@@ -156,7 +219,10 @@ function Employees() {
         showSnack('Employee added.');
       }
       setDialogOpen(false);
-      fetchEmployees();
+      fetchEmployees({
+        organisationId: selectedOrganisationId,
+        coreProcessCode: selectedCoreProcessCode,
+      });
     } catch (err) {
       showSnack(err.response?.data?.detail || 'Save failed.', 'error');
     } finally {
@@ -168,7 +234,10 @@ function Employees() {
     try {
       await api.delete(`/employees/${confirmDialog.row.id}/`);
       showSnack('Employee removed.');
-      fetchEmployees();
+      fetchEmployees({
+        organisationId: selectedOrganisationId,
+        coreProcessCode: selectedCoreProcessCode,
+      });
     } catch {
       showSnack('Delete failed.', 'error');
     } finally {
@@ -201,19 +270,15 @@ function Employees() {
     {
       field: 'organisation_details',
       headerName: 'Associated Organisation',
-      flex: 1.5,
-      minWidth: 200,
+      flex: 1.8,
+      minWidth: 260,
       renderCell: ({ value }) => (
         <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center' }}>
           {value && value.length > 0 ? (
             value.map((org) => (
-              <Chip
+              <OrgChip
                 key={org.id}
-                label={org.name}
-                size="small"
-                color={org.is_base ? 'primary' : 'secondary'}
-                variant={org.is_base ? 'filled' : 'outlined'}
-                clickable
+                org={org}
                 onClick={() => handleOrganisationFilter(org.id)}
               />
             ))
@@ -259,15 +324,66 @@ function Employees() {
 
   return (
     <Box>
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
-        <Typography variant="body2" color="text.secondary">
-          {selectedOrganisation ? `Showing employees for ${selectedOrganisation.name}` : 'Showing all employees'}
-        </Typography>
-        {selectedOrganisation && (
-          <Button variant="outlined" size="small" onClick={clearOrganisationFilter}>
-            Clear filter
-          </Button>
-        )}
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        spacing={1.5}
+        alignItems={{ xs: 'stretch', sm: 'center' }}
+        justifyContent="space-between"
+        sx={{ mb: 2 }}
+      >
+        <Stack spacing={0.5} sx={{ minWidth: 280, flex: 1 }}>
+          <Typography variant="body2" color="text.secondary">
+            {selectedOrganisation || selectedCoreProcessCode
+              ? `Filtering by${selectedOrganisation ? ` organisation ${selectedOrganisation.name}` : ''}${selectedOrganisation && selectedCoreProcessCode ? ' and' : ''}${selectedCoreProcessCode ? ` core process ${selectedCoreProcessCode}` : ''}`
+              : 'Showing all employees'}
+          </Typography>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ maxWidth: 760 }}>
+            <FormControl size="small" sx={{ minWidth: 240, flex: 1 }}>
+              <InputLabel id="employee-org-filter-label">Filter by organisation</InputLabel>
+              <Select
+                labelId="employee-org-filter-label"
+                value={selectedOrganisationId}
+                label="Filter by organisation"
+                onChange={handleOrganisationSelect}
+              >
+                <MenuItem value="">All organisations</MenuItem>
+                {organisations.map((org) => (
+                  <MenuItem key={org.id} value={org.id}>
+                    {org.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <FormControl size="small" sx={{ minWidth: 240, flex: 1 }}>
+              <InputLabel id="employee-core-filter-label">Filter by core process</InputLabel>
+              <Select
+                labelId="employee-core-filter-label"
+                value={selectedCoreProcessCode}
+                label="Filter by core process"
+                onChange={handleCoreProcessSelect}
+              >
+                <MenuItem value="">All core processes</MenuItem>
+                {CORE_PROCESSES.map((cp) => (
+                  <MenuItem key={cp.code} value={cp.code}>
+                    {cp.code} - {cp.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Stack>
+        </Stack>
+        <Stack direction="row" spacing={1} sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}>
+          {selectedOrganisation && (
+            <Button variant="outlined" size="small" onClick={clearOrganisationFilter}>
+              Clear org
+            </Button>
+          )}
+          {selectedCoreProcessCode && (
+            <Button variant="outlined" size="small" onClick={clearCoreProcessFilter}>
+              Clear process
+            </Button>
+          )}
+        </Stack>
       </Stack>
       <DataTable
         title="Employees"

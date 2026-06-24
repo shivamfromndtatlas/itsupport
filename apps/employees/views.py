@@ -21,6 +21,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         scope = self.request.query_params.get('scope')
         organisation_id = self.request.query_params.get('organisation_id')
+        core_process_code = self.request.query_params.get('core_process_code')
         if self.action == 'dashboard' or scope == 'all':
             queryset = (
                 Employee.objects.all()
@@ -35,6 +36,8 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             )
             if organisation_id:
                 queryset = queryset.filter(organisations__id=organisation_id)
+            if core_process_code:
+                queryset = queryset.filter(core_process_code=core_process_code)
             return queryset.distinct()
         if scope == 'allocatable':
             return (

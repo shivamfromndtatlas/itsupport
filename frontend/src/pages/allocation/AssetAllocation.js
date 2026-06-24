@@ -22,6 +22,7 @@ import {
   useTheme,
 } from '@mui/material';
 import SettingsBackupRestoreIcon from '@mui/icons-material/SettingsBackupRestore';
+import DeleteIcon from '@mui/icons-material/Delete';
 import PrintIcon from '@mui/icons-material/Print';
 import { QRCodeSVG } from 'qrcode.react';
 import DataTable from '../../components/common/DataTable';
@@ -58,6 +59,7 @@ function AssetAllocation() {
   const [hwForm, setHwForm] = useState(EMPTY_HW_FORM);
   const [savingHw, setSavingHw] = useState(false);
   const [recoverHw, setRecoverHw] = useState({ open: false, row: null });
+  const [deleteHw, setDeleteHw] = useState({ open: false, row: null });
   const [qrDialog, setQrDialog] = useState({ open: false, data: null, asset: null });
 
   // Software
@@ -81,12 +83,26 @@ function AssetAllocation() {
     return assetTypes.filter((type) => type.asset_type === filterKey);
   }, [assetTypes, tab]);
 
+  const allocatedAssetIds = useMemo(() => {
+    return new Set(
+      hwAllocations
+        .filter((row) => String(row.status || '').toLowerCase() === 'active')
+        .map((row) => String(row.asset_detail?.id || row.asset || row.asset_id || ''))
+        .filter(Boolean)
+    );
+  }, [hwAllocations]);
+
   const filteredAvailableAssets = useMemo(() => {
     if (!selectedCategory) return [];
     return availableAssets.filter((asset) => {
-      return String(asset.asset_type) === String(selectedCategory);
+      const status = String(asset.status || '').toLowerCase();
+      return (
+        status === 'available' &&
+        String(asset.asset_type) === String(selectedCategory) &&
+        !allocatedAssetIds.has(String(asset.id))
+      );
     });
-  }, [availableAssets, selectedCategory]);
+  }, [availableAssets, selectedCategory, allocatedAssetIds]);
 
   const [snack, setSnack] = useState({ open: false, msg: '', severity: 'success' });
   const qrRef = useRef();
@@ -130,7 +146,11 @@ function AssetAllocation() {
       setHwAllocations(hw.map((r) => ({ ...r, id: r.id || r.pk })));
       setSwAllocations(sw.map((r) => ({ ...r, id: r.id || r.pk })));
       setEmployees(emp.map((e) => ({ ...e, id: e.id || e.pk })));
-      setAvailableAssets(assets.map((a) => ({ ...a, id: a.id || a.pk })));
+      setAvailableAssets(
+        assets
+          .map((a) => ({ ...a, id: a.id || a.pk }))
+          .filter((a) => String(a.status || '').toLowerCase() === 'available')
+      );
       setAvailableLicenses(lics.map((l) => ({ ...l, id: l.id || l.pk })));
       const types = Array.isArray(typeRes.data) ? typeRes.data : typeRes.data.results || [];
       setAssetTypes(types.map((t) => ({ ...t, id: t.id || t.pk })));
@@ -181,6 +201,18 @@ function AssetAllocation() {
       showSnack('Recovery failed.', 'error');
     } finally {
       setRecoverHw({ open: false, row: null });
+    }
+  };
+
+  const handleDeleteHw = async () => {
+    try {
+      await api.delete(`/allocation/assets/${deleteHw.row.id}/`);
+      showSnack('Asset allocation deleted.');
+      fetchAll();
+    } catch {
+      showSnack('Delete failed.', 'error');
+    } finally {
+      setDeleteHw({ open: false, row: null });
     }
   };
 
@@ -307,20 +339,32 @@ function AssetAllocation() {
     {
       field: 'actions',
       headerName: 'Actions',
-      width: 100,
+      width: 140,
       sortable: false,
-      renderCell: ({ row }) =>
-        row.status !== 'recovered' ? (
-          <Tooltip title="Recover Asset">
+      renderCell: ({ row }) => (
+        <Box>
+          {row.status !== 'recovered' && (
+            <Tooltip title="Recover Asset">
+              <IconButton
+                size="small"
+                color="warning"
+                onClick={() => setRecoverHw({ open: true, row })}
+              >
+                <SettingsBackupRestoreIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+          <Tooltip title="Delete Allocation">
             <IconButton
               size="small"
-              color="warning"
-              onClick={() => setRecoverHw({ open: true, row })}
+              color="error"
+              onClick={() => setDeleteHw({ open: true, row })}
             >
-              <SettingsBackupRestoreIcon fontSize="small" />
+              <DeleteIcon fontSize="small" />
             </IconButton>
           </Tooltip>
-        ) : null,
+        </Box>
+      ),
     },
   ];
 
@@ -649,6 +693,17 @@ function AssetAllocation() {
         onCancel={() => setRecoverHw({ open: false, row: null })}
         confirmLabel="Recover"
         confirmColor="warning"
+      />
+
+      {/* Delete Allocation Confirm */}
+      <ConfirmDialog
+        open={deleteHw.open}
+        title="Delete Allocation"
+        message={`Delete this allocation? The asset will be returned to available if it is still active.`}
+        onConfirm={handleDeleteHw}
+        onCancel={() => setDeleteHw({ open: false, row: null })}
+        confirmLabel="Delete"
+        confirmColor="error"
       />
 
       {/* Revoke Confirm */}

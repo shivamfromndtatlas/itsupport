@@ -2,9 +2,11 @@ import posixpath
 import zipfile
 from io import BytesIO
 from xml.etree import ElementTree
+from urllib.parse import quote
 
-from django.db import transaction
+from django.db import models, transaction
 from django.db.models import Count, Sum
+from django.http import HttpResponse
 from rest_framework import viewsets
 from rest_framework import status as drf_status
 from rest_framework.decorators import action
@@ -55,6 +57,47 @@ REPORT_HEADER_ALIASES = {
     'user_name': ('username', 'user name', 'user'),
     'application_version': ('application version', 'version', 'app version'),
     'signature_key_hash': ('application signature key hash', 'signature key hash', 'hash'),
+}
+ASSET_TEMPLATE_BASE_HEADERS = [
+    'Asset Type',
+    'Asset ID',
+    'Serial Number',
+    'Vendor',
+    'Purchase Date',
+    'Purchase Cost',
+    'Warranty Expiry',
+    'Status',
+    'Notes',
+]
+ASSET_UPLOAD_HEADER_ALIASES = {
+    'asset_type': ('asset type', 'type'),
+    'asset_id': ('asset id', 'assetid'),
+    'serial_number': ('serial number', 'serialnumber', 'serial'),
+    'vendor': ('vendor', 'manufacturer'),
+    'purchase_date': ('purchase date', 'purchase'),
+    'purchase_cost': ('purchase cost', 'cost', 'price'),
+    'warranty_expiry': ('warranty expiry', 'warranty'),
+    'status': ('status',),
+    'notes': ('notes', 'remark', 'remarks'),
+}
+XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+ASSET_STATUS_UPLOAD_ALIASES = {
+    'available': 'available',
+    'in stock': 'available',
+    'reserved stock': 'available',
+    'good': 'available',
+    'new': 'available',
+    'working': 'available',
+    'assigned': 'assigned',
+    'issued': 'assigned',
+    'in use': 'assigned',
+    'maintenance': 'maintenance',
+    'under maintenance': 'maintenance',
+    'under repair': 'maintenance',
+    'repair': 'maintenance',
+    'retired': 'retired',
+    'discarded': 'retired',
+    'scrapped': 'retired',
 }
 
 
@@ -133,6 +176,22 @@ def normalize_header(value):
     return ' '.join(str(value or '').strip().lower().split())
 
 
+def normalize_asset_upload_status(status_value, attribute_values=None):
+    attribute_values = attribute_values or {}
+    availability_status = (
+        attribute_values.get('Availability Status')
+        or attribute_values.get('availability status')
+        or attribute_values.get('10')
+    )
+    for value in (availability_status, status_value):
+        normalized = normalize_header(value)
+        if not normalized:
+            continue
+        if normalized in ASSET_STATUS_UPLOAD_ALIASES:
+            return ASSET_STATUS_UPLOAD_ALIASES[normalized]
+    return 'available'
+
+
 def xlsx_cell_ref_col(cell_ref):
     letters = ''.join(ch for ch in cell_ref if ch.isalpha())
     index = 0
@@ -141,7 +200,7 @@ def xlsx_cell_ref_col(cell_ref):
     return index - 1
 
 
-def read_xlsx_rows(file_obj):
+def read_xlsx_workbook(file_obj):
     workbook = zipfile.ZipFile(BytesIO(file_obj.read()))
     shared_strings = []
     if 'xl/sharedStrings.xml' in workbook.namelist():
@@ -152,32 +211,323 @@ def read_xlsx_rows(file_obj):
     workbook_root = ElementTree.fromstring(workbook.read('xl/workbook.xml'))
     rels_root = ElementTree.fromstring(workbook.read('xl/_rels/workbook.xml.rels'))
     rel_map = {rel.attrib['Id']: rel.attrib['Target'] for rel in rels_root}
-    first_sheet = workbook_root.find('a:sheets/a:sheet', XLSX_NS)
-    if first_sheet is None:
-        return []
+    parsed_sheets = []
 
-    relation_id = first_sheet.attrib[f'{{{REL_NS}}}id']
-    target = rel_map[relation_id]
-    sheet_path = target.lstrip('/') if target.startswith('/xl/') else posixpath.normpath(posixpath.join('xl', target))
-    sheet_root = ElementTree.fromstring(workbook.read(sheet_path))
+    for sheet in workbook_root.findall('a:sheets/a:sheet', XLSX_NS):
+        relation_id = sheet.attrib[f'{{{REL_NS}}}id']
+        target = rel_map[relation_id]
+        sheet_path = target.lstrip('/') if target.startswith('/xl/') else posixpath.normpath(posixpath.join('xl', target))
+        sheet_root = ElementTree.fromstring(workbook.read(sheet_path))
+
+        rows = []
+        for row in sheet_root.findall('a:sheetData/a:row', XLSX_NS):
+            cells = {}
+            max_col = -1
+            for sequential_col, cell in enumerate(row.findall('a:c', XLSX_NS)):
+                col = xlsx_cell_ref_col(cell.attrib['r']) if 'r' in cell.attrib else sequential_col
+                max_col = max(max_col, col)
+                value_node = cell.find('a:v', XLSX_NS)
+                value = '' if value_node is None else value_node.text or ''
+                if cell.attrib.get('t') == 's' and value:
+                    value = shared_strings[int(value)]
+                elif cell.attrib.get('t') == 'inlineStr':
+                    value = ''.join(text.text or '' for text in cell.findall('.//a:t', XLSX_NS))
+                cells[col] = value
+            if max_col >= 0:
+                rows.append([cells.get(index, '') for index in range(max_col + 1)])
+        parsed_sheets.append((sheet.attrib.get('name', ''), rows))
+
+    return parsed_sheets
+
+
+def read_xlsx_rows(file_obj, sheet_name=None):
+    sheets = read_xlsx_workbook(file_obj)
+    if sheet_name:
+        normalized_sheet_name = normalize_header(sheet_name)
+        for name, rows in sheets:
+            if normalize_header(name) == normalized_sheet_name:
+                return rows
+    return sheets[0][1] if sheets else []
+
+
+def xlsx_column_letter(index):
+    index += 1
+    letters = []
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        letters.append(chr(65 + remainder))
+    return ''.join(reversed(letters))
+
+
+def xlsx_cell(row_number, col_number, value):
+    ref = f'{xlsx_column_letter(col_number)}{row_number}'
+    text = '' if value is None else str(value)
+    cell = ElementTree.Element('c', {'r': ref, 't': 'inlineStr'})
+    is_node = ElementTree.SubElement(cell, 'is')
+    t_node = ElementTree.SubElement(is_node, 't')
+    if text.startswith(' ') or text.endswith(' '):
+        t_node.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+    t_node.text = text
+    return cell
+
+
+def xlsx_sheet_xml(rows):
+    ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+    worksheet = ElementTree.Element('worksheet', {'xmlns': ns})
+    sheet_data = ElementTree.SubElement(worksheet, 'sheetData')
+    for row_number, row in enumerate(rows, start=1):
+        row_node = ElementTree.SubElement(sheet_data, 'row', {'r': str(row_number)})
+        for col_number, value in enumerate(row):
+            row_node.append(xlsx_cell(row_number, col_number, value))
+    return ElementTree.tostring(worksheet, encoding='utf-8', xml_declaration=True)
+
+
+def build_xlsx_workbook(sheets):
+    buffer = BytesIO()
+    root_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>
+'''
+    workbook = ElementTree.Element(
+        'workbook',
+        {'xmlns': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'xmlns:r': REL_NS},
+    )
+    sheets_node = ElementTree.SubElement(workbook, 'sheets')
+    workbook_rels = ElementTree.Element(
+        'Relationships',
+        {'xmlns': 'http://schemas.openxmlformats.org/package/2006/relationships'},
+    )
+    sheet_overrides = ''.join(
+        f'  <Override PartName="/xl/worksheets/sheet{index}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>\n'
+        for index, _ in enumerate(sheets, start=1)
+    )
+    content_types = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+{sheet_overrides}</Types>
+'''
+
+    for index, (sheet_name, rows) in enumerate(sheets, start=1):
+        ElementTree.SubElement(
+            sheets_node,
+            'sheet',
+            {'name': sheet_name, 'sheetId': str(index), f'{{{REL_NS}}}id': f'rId{index}'},
+        )
+        ElementTree.SubElement(
+            workbook_rels,
+            'Relationship',
+            {
+                'Id': f'rId{index}',
+                'Type': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet',
+                'Target': f'worksheets/sheet{index}.xml',
+            },
+        )
+
+    styles = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/></font></fonts>
+  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+</styleSheet>
+'''
+
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('[Content_Types].xml', content_types)
+        archive.writestr('_rels/.rels', root_rels)
+        archive.writestr('xl/workbook.xml', ElementTree.tostring(workbook, encoding='utf-8', xml_declaration=True))
+        archive.writestr('xl/_rels/workbook.xml.rels', ElementTree.tostring(workbook_rels, encoding='utf-8', xml_declaration=True))
+        archive.writestr('xl/styles.xml', styles)
+        for index, (_, rows) in enumerate(sheets, start=1):
+            archive.writestr(f'xl/worksheets/sheet{index}.xml', xlsx_sheet_xml(rows))
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def normalize_asset_header(value):
+    return normalize_header(value).strip(' -')
+
+
+def asset_template_metadata(asset_types):
+    attributes = list(
+        AssetAttribute.objects.prefetch_related('asset_types')
+        .filter(models.Q(is_common=True) | models.Q(asset_types__in=asset_types))
+        .distinct()
+        .order_by('name')
+    )
+    relevant_attributes = [
+        attr for attr in attributes if normalize_asset_header(attr.name) not in {normalize_asset_header(h) for h in ASSET_TEMPLATE_BASE_HEADERS}
+    ]
+    dynamic_headers = []
+    seen = set()
+    for attr in relevant_attributes:
+        header = attr.name.strip()
+        normalized = normalize_asset_header(header)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        dynamic_headers.append(header)
+    return dynamic_headers, relevant_attributes
+
+
+def build_asset_template(asset_types):
+    dynamic_headers, attributes = asset_template_metadata(asset_types)
+    asset_type_names = ', '.join(asset_types.values_list('name', flat=True)) or 'All asset types'
+    sheets = [
+        (
+            'Instructions',
+            [
+                ['Bulk Asset Upload Template'],
+                [],
+                ['Use one row per asset.'],
+                ['Download the template, fill in the values, and upload the same file back here.'],
+                ['Asset Type must match an existing asset type name exactly.'],
+                ['Leave attribute columns blank when they are not used for that row.'],
+            ],
+        ),
+        (
+            'Asset Upload',
+            [ASSET_TEMPLATE_BASE_HEADERS + dynamic_headers],
+        ),
+        (
+            'Attribute Reference',
+            [
+                ['Asset Type', 'Attribute', 'Field Type', 'Options', 'Common'],
+                *[
+                    [
+                        ', '.join(
+                            sorted(
+                                {
+                                    'Common'
+                                    if attr.is_common
+                                    else org_type.name
+                                    for org_type in attr.asset_types.all()
+                                }
+                            )
+                        )
+                        or 'Common',
+                        attr.name,
+                        attr.field_type,
+                        ', '.join(attr.options or []) if isinstance(attr.options, list) else '',
+                        'Yes' if attr.is_common else 'No',
+                    ]
+                    for attr in attributes
+                ],
+            ],
+        ),
+    ]
+    return build_xlsx_workbook(sheets), asset_type_names, dynamic_headers
+
+
+def parse_asset_bulk_upload(file_obj):
+    sheets = read_xlsx_workbook(file_obj)
+    if not sheets:
+        raise ValueError('The uploaded workbook is empty.')
 
     rows = []
-    for row in sheet_root.findall('a:sheetData/a:row', XLSX_NS):
-        cells = {}
-        max_col = -1
-        for sequential_col, cell in enumerate(row.findall('a:c', XLSX_NS)):
-            col = xlsx_cell_ref_col(cell.attrib['r']) if 'r' in cell.attrib else sequential_col
-            max_col = max(max_col, col)
-            value_node = cell.find('a:v', XLSX_NS)
-            value = '' if value_node is None else value_node.text or ''
-            if cell.attrib.get('t') == 's' and value:
-                value = shared_strings[int(value)]
-            elif cell.attrib.get('t') == 'inlineStr':
-                value = ''.join(text.text or '' for text in cell.findall('.//a:t', XLSX_NS))
-            cells[col] = value
-        if max_col >= 0:
-            rows.append([cells.get(index, '') for index in range(max_col + 1)])
-    return rows
+    normalized_upload_sheet = normalize_header('Asset Upload')
+    for sheet_name, sheet_rows in sheets:
+        if normalize_header(sheet_name) == normalized_upload_sheet:
+            rows = sheet_rows
+            break
+
+    candidate_sheets = [rows] if rows else []
+    candidate_sheets.extend(sheet_rows for _, sheet_rows in sheets if sheet_rows is not rows)
+
+    header_index = None
+    mapping = {}
+    normalized_base_headers = {normalize_asset_header(header): header for header in ASSET_TEMPLATE_BASE_HEADERS}
+    for sheet_rows in candidate_sheets:
+        for index, row in enumerate(sheet_rows[:20]):
+            candidate = {
+                normalize_asset_header(cell): idx
+                for idx, cell in enumerate(row)
+                if normalize_asset_header(cell) in normalized_base_headers
+            }
+            if 'asset type' in candidate and 'asset id' in candidate:
+                rows = sheet_rows
+                header_index = index
+                mapping = candidate
+                headers = row
+                break
+        if header_index is not None:
+            break
+
+    if header_index is None:
+        raise ValueError('Could not find the Asset Type and Asset ID columns in the workbook.')
+
+    headers = rows[header_index]
+    header_lookup = {normalize_asset_header(header): index for index, header in enumerate(headers)}
+    base_lookup = {normalize_asset_header(header): header for header in ASSET_TEMPLATE_BASE_HEADERS}
+
+    parsed_rows = []
+    errors = []
+    dynamic_headers = [
+        header
+        for header in headers
+        if normalize_asset_header(header) not in base_lookup and normalize_asset_header(header)
+    ]
+    dynamic_header_lookup = {normalize_asset_header(header): header for header in dynamic_headers}
+    asset_type_lookup = {
+        normalize_match_value(asset_type.name): asset_type
+        for asset_type in AssetType.objects.all()
+    }
+
+    def cell_value(row, header_name):
+        index = header_lookup.get(normalize_asset_header(header_name))
+        if index is None or index >= len(row):
+            return ''
+        return str(row[index] or '').strip()
+
+    for row_number, row in enumerate(rows[header_index + 1:], start=header_index + 2):
+        if not any(str(value or '').strip() for value in row):
+            continue
+
+        asset_type_name = cell_value(row, 'Asset Type')
+        asset_id = cell_value(row, 'Asset ID')
+        if not asset_type_name or not asset_id:
+            errors.append(f'Row {row_number}: Asset Type and Asset ID are required.')
+            continue
+
+        asset_type = asset_type_lookup.get(normalize_match_value(asset_type_name))
+        if not asset_type:
+            errors.append(f'Row {row_number}: Unknown asset type "{asset_type_name}".')
+            continue
+
+        attribute_values = {}
+        for header in dynamic_headers:
+            index = header_lookup.get(normalize_asset_header(header))
+            if index is None or index >= len(row):
+                continue
+            value = str(row[index] or '').strip()
+            if value == '':
+                continue
+            attribute_values[header] = value
+
+        payload = {
+            'asset_type': asset_type.name,
+            'asset_id': asset_id,
+            'serial_number': cell_value(row, 'Serial Number'),
+            'vendor': cell_value(row, 'Vendor'),
+            'purchase_date': cell_value(row, 'Purchase Date') or None,
+            'purchase_cost': cell_value(row, 'Purchase Cost') or None,
+            'warranty_expiry': cell_value(row, 'Warranty Expiry') or None,
+            'status': normalize_asset_upload_status(cell_value(row, 'Status'), attribute_values),
+            'notes': cell_value(row, 'Notes'),
+            'attribute_values': attribute_values,
+            'row_number': row_number,
+        }
+        parsed_rows.append(payload)
+
+    if errors:
+        raise ValueError(' ; '.join(errors))
+
+    return parsed_rows
 
 
 def report_column_map(headers):
@@ -395,9 +745,95 @@ class AssetViewSet(viewsets.ModelViewSet):
             return [IsITSpecialistOrSuperAdmin()]
         if self.action == 'upload_installed_app_report':
             return [IsITSpecialistOrSuperAdmin()]
+        if self.action in ('bulk_template', 'bulk_upload'):
+            return [IsITSpecialistOrSuperAdmin()]
         if self.action == 'dashboard_stats':
             return [IsITOrHROrSuperAdmin()]
         return [IsAuthenticated()]
+
+    @action(detail=False, methods=['get'], url_path='bulk-template')
+    def bulk_template(self, request):
+        asset_type_ids = [
+            value
+            for value in request.query_params.get('asset_type_ids', '').split(',')
+            if value.strip().isdigit()
+        ]
+        asset_types = AssetType.objects.filter(id__in=asset_type_ids).order_by('name')
+        if not asset_type_ids:
+            asset_types = AssetType.objects.all().order_by('name')
+
+        workbook_bytes, asset_type_names, dynamic_headers = build_asset_template(asset_types)
+        filename = 'asset-bulk-upload-template.xlsx'
+        if asset_type_names:
+            filename = f"asset-bulk-upload-template-{asset_type_names.replace(', ', '-').replace('/', '-')}.xlsx"
+        response = HttpResponse(workbook_bytes, content_type=XLSX_MIME_TYPE)
+        response['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(filename)}"
+        response['X-Template-Asset-Types'] = asset_type_names
+        response['X-Template-Attribute-Count'] = str(len(dynamic_headers))
+        return response
+
+    @action(detail=False, methods=['post'], url_path='bulk-upload', parser_classes=[MultiPartParser])
+    def bulk_upload(self, request):
+        upload_file = request.FILES.get('file')
+        if not upload_file:
+            return Response({'detail': 'Upload an .xlsx template file.'}, status=drf_status.HTTP_400_BAD_REQUEST)
+        if not upload_file.name.lower().endswith('.xlsx'):
+            return Response({'detail': 'Only .xlsx files are supported.'}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        try:
+            rows = parse_asset_bulk_upload(upload_file)
+        except (zipfile.BadZipFile, ElementTree.ParseError, KeyError, ValueError) as exc:
+            return Response({'detail': str(exc)}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        if not rows:
+            return Response({'detail': 'No asset rows were found in the uploaded workbook.'}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        created = 0
+        updated = 0
+        row_errors = []
+
+        with transaction.atomic():
+            for row in rows:
+                row_number = row.pop('row_number')
+                attribute_values = row.pop('attribute_values', {})
+                asset_type_name = row['asset_type']
+                asset_type, _ = AssetType.objects.get_or_create(
+                    name=asset_type_name,
+                    defaults={'asset_type': 'hardware'},
+                )
+
+                serializer = AssetCreateSerializer(data={**row, 'asset_type': asset_type.name, 'attribute_values': attribute_values})
+                if not serializer.is_valid():
+                    row_errors.append(f"Row {row_number}: {serializer.errors}")
+                    continue
+
+                asset_id = serializer.validated_data['asset_id']
+                instance = Asset.objects.filter(asset_id=asset_id).first()
+                if instance:
+                    for attr, value in serializer.validated_data.items():
+                        if attr == 'asset_type':
+                            instance.asset_type = asset_type
+                        else:
+                            setattr(instance, attr, value)
+                    instance.save()
+                    updated += 1
+                else:
+                    serializer.save()
+                    created += 1
+
+            if row_errors:
+                transaction.set_rollback(True)
+                return Response(
+                    {
+                        'detail': 'Some rows could not be imported.',
+                        'errors': row_errors,
+                        'created': created,
+                        'updated': updated,
+                    },
+                    status=drf_status.HTTP_400_BAD_REQUEST,
+                )
+
+        return Response({'detail': 'Bulk asset upload completed.', 'created': created, 'updated': updated})
 
     @action(detail=False, methods=['get'], url_path='dashboard-stats')
     def dashboard_stats(self, request):
