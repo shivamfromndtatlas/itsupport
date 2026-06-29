@@ -45,6 +45,7 @@ const SYSTEM_ASSET_ATTRIBUTE_NAMES = new Set(['asset id', 'asset type', 'status'
 
 const EMPTY_ASSET = {
   organisation: '',
+  location: '',
   asset_type: '',
   asset_id: '',
   serial_number: '',
@@ -101,6 +102,7 @@ function Assets() {
 
   const [assetTypes, setAssetTypes] = useState([]);
   const [organisations, setOrganisations] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [assetAttributes, setAssetAttributes] = useState([]);
   const [licenseTypeChoices, setLicenseTypeChoices] = useState([]);
   const [hardwareAssetTypeFilter] = useState([]);
@@ -150,6 +152,11 @@ function Assets() {
     [organisations, selectedOrganisationId]
   );
 
+  const locationOptions = useMemo(() => {
+    if (!assetForm.organisation) return locations;
+    return locations.filter((location) => String(location.organisation) === String(assetForm.organisation));
+  }, [locations, assetForm.organisation]);
+
   const fetchChoices = useCallback(async () => {
     try {
       const [typesRes, licenseTypeRes] = await Promise.all([
@@ -161,7 +168,7 @@ function Assets() {
     } catch {
       showSnack('Failed to load form options.', 'error');
     }
-  }, []);
+  }, [selectedOrganisationId]);
 
   const fetchAssetAttributes = useCallback(async () => {
     try {
@@ -169,6 +176,20 @@ function Assets() {
       setAssetAttributes(Array.isArray(res.data) ? res.data : res.data.results || []);
     } catch {
       showSnack('Failed to load asset attributes.', 'error');
+    }
+  }, [selectedOrganisationId]);
+
+  const fetchLocations = useCallback(async (organisationId) => {
+    if (!organisationId) {
+      setLocations([]);
+      return;
+    }
+    try {
+      const res = await api.get(`/organisations/${organisationId}/locations/`);
+      setLocations(Array.isArray(res.data) ? res.data : res.data.results || []);
+    } catch {
+      showSnack('Failed to load organisation locations.', 'error');
+      setLocations([]);
     }
   }, []);
 
@@ -219,6 +240,14 @@ function Assets() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (assetForm.organisation) {
+      fetchLocations(assetForm.organisation);
+    } else {
+      setLocations([]);
+    }
+  }, [assetForm.organisation, fetchLocations]);
 
   const selectedAssetType = useMemo(
     () => assetTypes.find((type) => type.name === assetForm.asset_type),
@@ -273,6 +302,7 @@ function Assets() {
     const payload = {
       asset_type: assetForm.asset_type,
       organisation: assetForm.organisation || null,
+      location: assetForm.location || null,
       asset_id: assetForm.asset_id,
       serial_number: assetForm.serial_number,
       vendor: assetForm.vendor,
@@ -345,6 +375,7 @@ function Assets() {
   const openAddAsset = () => {
     setEditAsset(null);
     setAssetForm(EMPTY_ASSET);
+    setLocations([]);
     setAssetDialog(true);
   };
 
@@ -362,6 +393,11 @@ function Assets() {
         ? String(row.organisation_detail.id)
         : row.organisation
           ? String(row.organisation)
+          : '',
+      location: row.location_detail?.id
+        ? String(row.location_detail.id)
+        : row.location
+          ? String(row.location)
           : '',
       asset_id: row.asset_id || '',
       serial_number: row.serial_number || '',
@@ -530,6 +566,12 @@ function Assets() {
       headerName: 'Organisation',
       width: 170,
       valueGetter: (_, row) => row.organisation_detail?.name || row.organisation?.name || '--',
+    },
+    {
+      field: 'location_detail',
+      headerName: 'Location',
+      width: 180,
+      valueGetter: (_, row) => row.location_detail?.name || '--',
     },
     { field: 'asset_type_name', headerName: 'Type', width: 120 },
     {
@@ -831,12 +873,33 @@ function Assets() {
                 label="Organisation"
                 fullWidth
                 value={assetForm.organisation}
-                onChange={(e) => setAssetForm({ ...assetForm, organisation: e.target.value })}
+                onChange={(e) => {
+                  const nextOrganisation = e.target.value;
+                  setAssetForm({ ...assetForm, organisation: nextOrganisation, location: '' });
+                  fetchLocations(nextOrganisation);
+                }}
               >
                 <MenuItem value="">Unassigned</MenuItem>
                 {organisations.map((org) => (
                   <MenuItem key={org.id} value={String(org.id)}>
                     {org.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                select
+                label="Location"
+                fullWidth
+                value={assetForm.location}
+                onChange={(e) => setAssetForm({ ...assetForm, location: e.target.value })}
+                disabled={!assetForm.organisation}
+              >
+                <MenuItem value="">Unassigned</MenuItem>
+                {locationOptions.map((location) => (
+                  <MenuItem key={location.id} value={String(location.id)}>
+                    {location.name}
                   </MenuItem>
                 ))}
               </TextField>

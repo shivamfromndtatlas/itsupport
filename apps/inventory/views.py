@@ -721,18 +721,21 @@ class AssetViewSet(viewsets.ModelViewSet):
     dashboard_stats action: IT/HR/super_admin.
     """
 
-    queryset = Asset.objects.select_related('asset_type').all()
+    queryset = Asset.objects.select_related('asset_type', 'organisation', 'location', 'location__organisation').all()
 
     def get_queryset(self):
         queryset = super().get_queryset()
         status = self.request.query_params.get('status')
         source = self.request.query_params.get('source')
         organisation_id = self.request.query_params.get('organisation_id')
+        location_id = self.request.query_params.get('location_id')
 
         if status:
             queryset = queryset.filter(status=status)
         if organisation_id:
             queryset = queryset.filter(organisation_id=organisation_id)
+        if location_id:
+            queryset = queryset.filter(location_id=location_id)
         if source == 'portal':
             queryset = queryset.exclude(vendor='SureMDM').exclude(asset_id__startswith='SUREMDM-')
 

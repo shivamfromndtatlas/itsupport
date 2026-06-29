@@ -54,6 +54,13 @@ class Asset(models.Model):
         blank=True,
         related_name='assets',
     )
+    location = models.ForeignKey(
+        'organisations.OrganisationLocation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assets',
+    )
     asset_type = models.ForeignKey(AssetType, on_delete=models.CASCADE, related_name='assets')
     serial_number = models.CharField(max_length=200, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='available')

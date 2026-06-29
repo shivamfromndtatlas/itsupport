@@ -26,12 +26,13 @@ class AssetAttributeSerializer(serializers.ModelSerializer):
 class AssetSerializer(serializers.ModelSerializer):
     asset_type_name = serializers.CharField(source='asset_type.name', read_only=True)
     organisation_detail = serializers.SerializerMethodField()
+    location_detail = serializers.SerializerMethodField()
     attribute_values_with_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Asset
         fields = [
-            'id', 'asset_id', 'organisation', 'organisation_detail', 'asset_type', 'asset_type_name',
+            'id', 'asset_id', 'organisation', 'organisation_detail', 'location', 'location_detail', 'asset_type', 'asset_type_name',
             'serial_number', 'status', 'purchase_date', 'purchase_cost',
             'warranty_expiry', 'vendor', 'notes', 'attribute_values',
             'attribute_values_with_names',
@@ -83,6 +84,19 @@ class AssetSerializer(serializers.ModelSerializer):
             'is_base': organisation.is_base,
         }
 
+    def get_location_detail(self, obj):
+        location = obj.location
+        if not location:
+            return None
+        return {
+            'id': location.id,
+            'name': location.name,
+            'organisation_id': location.organisation_id,
+            'organisation_name': location.organisation.name if location.organisation_id else None,
+            'city': location.city,
+            'country': location.country,
+        }
+
 
 class AssetCreateSerializer(serializers.Serializer):
     """
@@ -91,6 +105,9 @@ class AssetCreateSerializer(serializers.Serializer):
     """
     organisation = serializers.PrimaryKeyRelatedField(
         queryset=Organisation.objects.all(), required=False, allow_null=True, default=None
+    )
+    location = serializers.PrimaryKeyRelatedField(
+        queryset=Organisation.objects.none(), required=False, allow_null=True, default=None
     )
     asset_type = serializers.CharField(max_length=100)
     asset_id = serializers.CharField(max_length=100)
@@ -102,6 +119,18 @@ class AssetCreateSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=['available', 'assigned', 'maintenance', 'retired'], default='available')
     notes = serializers.CharField(required=False, allow_blank=True, default='')
     attribute_values = serializers.DictField(required=False, default=dict)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from apps.organisations.models import OrganisationLocation
+        self.fields['location'].queryset = OrganisationLocation.objects.select_related('organisation').all()
+
+    def validate(self, attrs):
+        organisation = attrs.get('organisation') or getattr(self.instance, 'organisation', None)
+        location = attrs.get('location') or getattr(self.instance, 'location', None)
+        if location and organisation and location.organisation_id != organisation.id:
+            raise serializers.ValidationError({'location': 'Selected location must belong to the chosen organisation.'})
+        return attrs
 
     def create(self, validated_data):
         asset_type_name = validated_data.pop('asset_type')
