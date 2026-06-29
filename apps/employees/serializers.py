@@ -93,6 +93,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'core_process_name', 'created_at', 'updated_at']
         extra_kwargs = {
+            'official_email': {'validators': []},
             'contact_number': {'required': False, 'allow_blank': True},
             'line_manager': {'write_only': True, 'required': False, 'allow_null': True},
         }
@@ -101,6 +102,14 @@ class EmployeeSerializer(serializers.ModelSerializer):
         code = validated_data.get('core_process_code', '')
         validated_data['core_process_name'] = CORE_PROCESS_MAP.get(code, '')
         return validated_data
+
+    def validate_official_email(self, value):
+        queryset = Employee.objects.filter(official_email__iexact=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError('An employee with this email already exists.')
+        return value
 
     def create(self, validated_data):
         return super().create(self._set_core_process_name(validated_data))

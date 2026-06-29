@@ -7,13 +7,22 @@ import {
   CardContent,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  Divider,
   Grid,
   MenuItem,
+  Paper,
   Stack,
   TextField,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import ClearIcon from '@mui/icons-material/Clear';
+import DevicesIcon from '@mui/icons-material/Devices';
 import KeyIcon from '@mui/icons-material/Key';
 import SaveIcon from '@mui/icons-material/Save';
 import SyncIcon from '@mui/icons-material/Sync';
@@ -29,7 +38,74 @@ const EMPTY_FORM = {
   is_active: true,
 };
 
+const SUMMARY_FIELDS = [
+  ['Device Name', 'name'],
+  ['Serial Number', 'serial_number'],
+  ['System Tag', 'system_tag'],
+  ['MDM Device ID', 'suremdm_device_id'],
+  ['Category', 'category'],
+  ['Platform', 'platform'],
+  ['Model', 'model'],
+  ['Manufacturer', 'manufacturer'],
+  ['Processor', 'processor'],
+  ['RAM', 'ram'],
+  ['Storage', 'storage'],
+  ['Last Seen', 'last_seen'],
+];
+
+const formatFieldLabel = (key) =>
+  String(key)
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^./, (char) => char.toUpperCase());
+
+const formatFieldValue = (value) => {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+};
+
+const flattenObject = (value, prefix = '') => {
+  if (!value || typeof value !== 'object') return [];
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => flattenObject(item, `${prefix}[${index}]`));
+  }
+
+  return Object.entries(value).flatMap(([key, nested]) => {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (nested && typeof nested === 'object') {
+      const nestedRows = flattenObject(nested, path);
+      return nestedRows.length ? nestedRows : [{ label: path, value: nested }];
+    }
+    return [{ label: path, value: nested }];
+  });
+};
+
+const buildRawRows = (device) => {
+  const normalized = Object.entries(device || {})
+    .filter(([key]) => !['id', 'raw', 'platform_model'].includes(key))
+    .map(([key, value]) => ({ label: formatFieldLabel(key), value }));
+  const raw = flattenObject(device?.raw || {}).map(({ label, value }) => ({
+    label: formatFieldLabel(label),
+    value,
+  }));
+
+  const seen = new Set();
+  return [...normalized, ...raw].filter(({ label, value }) => {
+    const rowKey = `${label}:${formatFieldValue(value)}`;
+    if (seen.has(rowKey)) return false;
+    seen.add(rowKey);
+    return value !== null && value !== undefined && value !== '';
+  });
+};
+
 function Integrations() {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const [form, setForm] = useState(EMPTY_FORM);
   const [connection, setConnection] = useState(null);
   const [devices, setDevices] = useState([]);
@@ -41,6 +117,7 @@ function Integrations() {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [selectedPlatform, setSelectedPlatform] = useState('all');
   const [deviceSearch, setDeviceSearch] = useState('');
+  const [selectedDevice, setSelectedDevice] = useState(null);
 
   const showMessage = (severity, text) => setMessage({ severity, text });
 
@@ -133,8 +210,38 @@ function Integrations() {
     }
   };
 
+  const handleRefresh = async () => {
+    await loadConnection();
+    await loadDevices();
+  };
+
   const columns = [
-    { field: 'name', headerName: 'Device', flex: 1, minWidth: 180 },
+    {
+      field: 'name',
+      headerName: 'Device',
+      flex: 1,
+      minWidth: 180,
+      renderCell: ({ row, value }) => (
+        <Button
+          variant="text"
+          size="small"
+          onClick={() => setSelectedDevice(row)}
+          sx={{
+            justifyContent: 'flex-start',
+            minWidth: 0,
+            p: 0,
+            color: 'text.primary',
+            fontWeight: 700,
+            textTransform: 'none',
+            '&:hover': { color: 'primary.main', backgroundColor: 'transparent' },
+          }}
+        >
+          <Typography variant="body2" noWrap fontWeight={700}>
+            {value || row.serial_number || row.suremdm_device_id || 'Unnamed device'}
+          </Typography>
+        </Button>
+      ),
+    },
     { field: 'serial_number', headerName: 'Serial Number', flex: 1, minWidth: 160 },
     { field: 'category', headerName: 'MDM Category', flex: 1, minWidth: 150 },
     { field: 'platform_model', headerName: 'Platform / Model', flex: 1, minWidth: 180 },
@@ -174,6 +281,7 @@ function Integrations() {
   }, [devices, selectedCategory, selectedPlatform, deviceSearch]);
 
   const hasActiveFilters = selectedCategory !== 'all' || selectedPlatform !== 'all' || deviceSearch.trim();
+  const selectedDeviceRows = useMemo(() => buildRawRows(selectedDevice), [selectedDevice]);
   const resetFilters = () => {
     setSelectedCategory('all');
     setSelectedPlatform('all');
@@ -283,9 +391,14 @@ function Integrations() {
         <Grid item xs={12} md={7}>
           <Card sx={{ borderRadius: 2, boxShadow: 2 }}>
             <CardContent sx={{ p: 3 }}>
-              <Typography variant="h6" fontWeight={700} sx={{ mb: 2 }}>
-                SureMDM Devices
-              </Typography>
+              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
+                <Typography variant="h6" fontWeight={700}>
+                  SureMDM Devices
+                </Typography>
+                <Button variant="outlined" size="small" startIcon={<RefreshIcon />} onClick={handleRefresh}>
+                  Refresh
+                </Button>
+              </Stack>
               {categories.length > 0 && (
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
                   <Chip
@@ -367,13 +480,14 @@ function Integrations() {
                   rows={filteredDevices}
                   columns={columns}
                   autoHeight
-                  disableRowSelectionOnClick
+                  onRowClick={({ row }) => setSelectedDevice(row)}
                   pageSizeOptions={[10, 25]}
                   initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
                   sx={{
                     border: 'none',
                     minWidth: 500,
                     fontSize: 13.5,
+                    '& .MuiDataGrid-row': { cursor: 'pointer' },
                     '& .MuiDataGrid-columnHeaders': { backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' },
                     '& .MuiDataGrid-columnHeaderTitle': { fontWeight: 700, fontSize: 12, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em' },
                     '& .MuiDataGrid-row:hover': { backgroundColor: '#F8FAFC' },
@@ -387,6 +501,78 @@ function Integrations() {
           </Card>
         </Grid>
       </Grid>
+
+      <Dialog
+        open={Boolean(selectedDevice)}
+        onClose={() => setSelectedDevice(null)}
+        maxWidth="lg"
+        fullWidth
+        fullScreen={fullScreen}
+      >
+        <DialogTitle>
+          <Stack direction="row" alignItems="center" spacing={1.5}>
+            <DevicesIcon color="primary" />
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="h6" fontWeight={800} noWrap>
+                {selectedDevice?.name || selectedDevice?.serial_number || 'MDM Device'}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" noWrap>
+                {selectedDevice?.category || 'Uncategorized'} - {[selectedDevice?.platform, selectedDevice?.model].filter(Boolean).join(' / ') || 'Platform unavailable'}
+              </Typography>
+            </Box>
+          </Stack>
+        </DialogTitle>
+        <DialogContent dividers>
+          <Grid container spacing={2} sx={{ mb: 3 }}>
+            {SUMMARY_FIELDS.map(([label, key]) => (
+              <Grid item xs={12} sm={6} md={4} key={key}>
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1, height: '100%' }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                    {label}
+                  </Typography>
+                  <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5, wordBreak: 'break-word' }}>
+                    {formatFieldValue(selectedDevice?.[key])}
+                  </Typography>
+                </Paper>
+              </Grid>
+            ))}
+          </Grid>
+
+          <Divider sx={{ mb: 2 }} />
+          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1.5 }}>
+            <Typography variant="subtitle1" fontWeight={800}>
+              Full MDM Payload
+            </Typography>
+            <Chip size="small" label={`${selectedDeviceRows.length} fields`} />
+          </Stack>
+
+          <Grid container spacing={1.25}>
+            {selectedDeviceRows.map(({ label, value }, index) => (
+              <Grid item xs={12} md={6} key={`${label}-${index}`}>
+                <Box
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: { xs: '1fr', sm: '190px 1fr' },
+                    gap: 1,
+                    p: 1.25,
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: 1,
+                    bgcolor: index % 2 === 0 ? 'background.paper' : 'grey.50',
+                  }}
+                >
+                  <Typography variant="caption" color="text.secondary" fontWeight={800} sx={{ wordBreak: 'break-word' }}>
+                    {label}
+                  </Typography>
+                  <Typography variant="body2" sx={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+                    {formatFieldValue(value)}
+                  </Typography>
+                </Box>
+              </Grid>
+            ))}
+          </Grid>
+        </DialogContent>
+      </Dialog>
     </Box>
   );
 }

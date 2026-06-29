@@ -22,7 +22,8 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         scope = self.request.query_params.get('scope')
         organisation_id = self.request.query_params.get('organisation_id')
         core_process_code = self.request.query_params.get('core_process_code')
-        if self.action == 'dashboard' or scope == 'all':
+        # Detail routes must be able to resolve employees outside the base org.
+        if self.action in ('retrieve', 'update', 'partial_update', 'destroy', 'dashboard') or scope == 'all':
             queryset = (
                 Employee.objects.all()
                 .select_related('line_manager')

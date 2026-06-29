@@ -55,6 +55,12 @@ class OrganisationMemberAssignmentSerializer(serializers.Serializer):
             raise serializers.ValidationError('All assigned employees must already belong to the base organisation.')
         return value
 
+    def validate_new_members(self, value):
+        for member in value:
+            if 'full_name' not in member or 'official_email' not in member:
+                raise serializers.ValidationError('New members must include full_name and official_email.')
+        return value
+
 
 class OrganisationMemberProfileSerializer(serializers.Serializer):
     id = serializers.IntegerField(read_only=True)
@@ -135,8 +141,8 @@ class OrganisationMemberProfileSerializer(serializers.Serializer):
 
     def validate_new_members(self, value):
         for member in value:
-            if 'employee_id' not in member or 'full_name' not in member or 'official_email' not in member:
-                raise serializers.ValidationError('New members must include employee_id, full_name, and official_email.')
+            if 'full_name' not in member or 'official_email' not in member:
+                raise serializers.ValidationError('New members must include full_name and official_email.')
         return value
 
 

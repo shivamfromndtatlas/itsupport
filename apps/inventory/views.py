@@ -727,9 +727,12 @@ class AssetViewSet(viewsets.ModelViewSet):
         queryset = super().get_queryset()
         status = self.request.query_params.get('status')
         source = self.request.query_params.get('source')
+        organisation_id = self.request.query_params.get('organisation_id')
 
         if status:
             queryset = queryset.filter(status=status)
+        if organisation_id:
+            queryset = queryset.filter(organisation_id=organisation_id)
         if source == 'portal':
             queryset = queryset.exclude(vendor='SureMDM').exclude(asset_id__startswith='SUREMDM-')
 
@@ -842,6 +845,9 @@ class AssetViewSet(viewsets.ModelViewSet):
         top 5 asset types, and a software licence seat summary.
         """
         assets_qs = Asset.objects.exclude(vendor='SureMDM').exclude(asset_id__startswith='SUREMDM-')
+        organisation_id = request.query_params.get('organisation_id')
+        if organisation_id:
+            assets_qs = assets_qs.filter(organisation_id=organisation_id)
         total = assets_qs.count()
 
         status_counts = {
@@ -866,6 +872,8 @@ class AssetViewSet(viewsets.ModelViewSet):
 
         # Software licence summary
         licenses_qs = SoftwareLicense.objects.all()
+        if organisation_id:
+            licenses_qs = licenses_qs.filter(organisation_id=organisation_id)
         total_seats = licenses_qs.aggregate(total=Sum('total_seats'))['total'] or 0
         available_seats = licenses_qs.aggregate(avail=Sum('available_seats'))['avail'] or 0
         used_seats = total_seats - available_seats
@@ -1087,6 +1095,13 @@ class SoftwareLicenseViewSet(viewsets.ModelViewSet):
 
     queryset = SoftwareLicense.objects.all()
     serializer_class = SoftwareLicenseSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        organisation_id = self.request.query_params.get('organisation_id')
+        if organisation_id:
+            queryset = queryset.filter(organisation_id=organisation_id)
+        return queryset
 
     def get_permissions(self):
         if self.action in ('create', 'update', 'partial_update', 'destroy'):

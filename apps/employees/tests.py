@@ -133,6 +133,51 @@ class EmployeeApiScopeTests(APITestCase):
         self.assertIn('EMP100', employee_ids)
         self.assertIn('EMP200', employee_ids)
 
+    def test_client_employee_detail_can_be_retrieved_and_patched(self):
+        detail_url = reverse('employee-detail', kwargs={'pk': self.client_employee.id})
+
+        retrieve_response = self.client.get(detail_url)
+        self.assertEqual(retrieve_response.status_code, 200)
+        self.assertEqual(retrieve_response.data['employee_id'], 'EMP200')
+
+        patch_response = self.client.patch(detail_url, {'core_process_code': '02BDP'}, format='json')
+        self.assertEqual(patch_response.status_code, 200)
+        self.assertEqual(patch_response.data['core_process_code'], '02BDP')
+        self.assertEqual(patch_response.data['core_process_name'], 'Business Development Process')
+
+    def test_client_employee_employee_id_can_be_updated(self):
+        detail_url = reverse('employee-detail', kwargs={'pk': self.client_employee.id})
+
+        patch_response = self.client.patch(
+            detail_url,
+            {
+                'employee_id': 'EMP200-UPDATED',
+                'full_name': 'Client Employee',
+                'official_email': 'client@example.com',
+            },
+            format='json',
+        )
+
+        self.assertEqual(patch_response.status_code, 200)
+        self.assertEqual(patch_response.data['employee_id'], 'EMP200-UPDATED')
+        self.client_employee.refresh_from_db()
+        self.assertEqual(self.client_employee.employee_id, 'EMP200-UPDATED')
+
+    def test_duplicate_employee_email_is_rejected(self):
+        response = self.client.post(
+            reverse('employee-list'),
+            {
+                'employee_id': 'EMP201',
+                'full_name': 'Duplicate Email Employee',
+                'official_email': 'client@example.com',
+                'status': 'active',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('An employee with this email already exists.', str(response.data))
+
 
 class EmployeeDashboardTests(APITestCase):
     def setUp(self):

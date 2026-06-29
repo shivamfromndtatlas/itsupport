@@ -258,14 +258,14 @@ function AssetDeviceDashboard() {
           </Button>
         </Stack>
         {uploadError && <Alert severity="error" sx={{ mb: 2 }}>{uploadError}</Alert>}
-        <DataTable rows={appRows} columns={appColumns} searchable pageSize={25} />
+        <DataTable rows={appRows} columns={appColumns} searchable pageSize={25} onRefresh={fetchReport} refreshLabel="Refresh" />
       </Paper>
 
       <Paper sx={{ p: 2, borderRadius: 2 }}>
         <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 2 }}>
           Device Attributes
         </Typography>
-        <DataTable rows={attributeRows} columns={attributeColumns} pageSize={10} />
+        <DataTable rows={attributeRows} columns={attributeColumns} pageSize={10} onRefresh={fetchReport} refreshLabel="Refresh" />
       </Paper>
     </Stack>
   );

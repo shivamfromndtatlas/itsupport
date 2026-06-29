@@ -172,8 +172,10 @@ function Tickets() {
         rows={rows}
         columns={columns}
         loading={loading}
+        onRefresh={fetchTickets}
         onAdd={() => { setForm(EMPTY_TICKET); setRaiseDialog(true); }}
         addLabel="Raise Ticket"
+        refreshLabel="Refresh"
         searchable
       />
 

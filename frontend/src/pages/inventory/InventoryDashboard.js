@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Card,
@@ -14,6 +14,8 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Stack,
+  Button,
 } from '@mui/material';
 import DevicesIcon from '@mui/icons-material/Devices';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
@@ -82,19 +84,21 @@ function InventoryDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      try {
-        const res = await api.get('/inventory/assets/dashboard-stats/');
-        setData(res.data);
-      } catch {
-        setError('Failed to load inventory dashboard data.');
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const loadDashboard = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.get('/inventory/assets/dashboard-stats/');
+      setData(res.data);
+    } catch {
+      setError('Failed to load inventory dashboard data.');
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
 
   const stats = data?.summary || data || {};
   const statusCounts = data?.status_counts || data?.summary?.status_counts || {};
@@ -118,7 +122,10 @@ function InventoryDashboard() {
 
   return (
     <Box>
-      {error && <Alert severity="error" sx={{ mb: 2.5 }}>{error}</Alert>}
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2.5 }} spacing={2}>
+        {error ? <Alert severity="error" sx={{ flex: 1 }}>{error}</Alert> : <Box />}
+        <Button variant="outlined" size="small" onClick={loadDashboard}>Refresh</Button>
+      </Stack>
 
       {/* Stat Cards */}
       <Grid container spacing={2.5} sx={{ mb: 3 }}>

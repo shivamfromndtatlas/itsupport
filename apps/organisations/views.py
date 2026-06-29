@@ -16,6 +16,15 @@ from apps.organisations.serializers import (
 from apps.users.permissions import IsSuperAdmin
 
 
+def _generate_employee_id():
+    from uuid import uuid4
+
+    candidate = f'AUTO-{uuid4().hex[:10].upper()}'
+    while Employee.objects.filter(employee_id=candidate).exists():
+        candidate = f'AUTO-{uuid4().hex[:10].upper()}'
+    return candidate
+
+
 class OrganisationViewSet(viewsets.ModelViewSet):
     queryset = Organisation.objects.all()
     serializer_class = OrganisationSerializer
@@ -57,6 +66,10 @@ class OrganisationViewSet(viewsets.ModelViewSet):
 
         created_employees = []
         for member_data in new_members:
+            member_data = member_data.copy()
+            if not member_data.get('employee_id'):
+                member_data['employee_id'] = _generate_employee_id()
+
             employee_serializer = EmployeeSerializer(data=member_data)
             employee_serializer.is_valid(raise_exception=True)
             with skip_base_org_assignment():
@@ -80,7 +93,7 @@ class OrganisationViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
-    @action(detail=True, methods=['get', 'patch'], url_path='member-profiles', url_name='member-profiles')
+    @action(detail=True, methods=['get', 'patch', 'delete'], url_path='member-profiles', url_name='member-profiles')
     def member_profiles(self, request, pk=None):
         organisation = self.get_object()
         if organisation.is_base:
@@ -89,8 +102,8 @@ class OrganisationViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if request.method == 'PATCH' and getattr(request.user, 'role', None) != 'super_admin':
-            return Response({'detail': 'You do not have permission to edit member profiles.'}, status=status.HTTP_403_FORBIDDEN)
+        if request.method in ('PATCH', 'DELETE') and getattr(request.user, 'role', None) != 'super_admin':
+            return Response({'detail': 'You do not have permission to modify member profiles.'}, status=status.HTTP_403_FORBIDDEN)
 
         if request.method == 'GET':
             profiles = []
@@ -103,6 +116,20 @@ class OrganisationViewSet(viewsets.ModelViewSet):
                 profiles.append(profile)
             serializer = OrganisationMemberProfileSerializer(profiles, many=True)
             return Response(serializer.data)
+
+        if request.method == 'DELETE':
+            employee_id = request.data.get('employee') or request.data.get('id')
+            if not employee_id:
+                return Response({'detail': 'Employee is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                employee = Employee.objects.get(id=employee_id, organisations=organisation)
+            except Employee.DoesNotExist:
+                return Response({'detail': 'Employee is not a member of this organisation.'}, status=status.HTTP_404_NOT_FOUND)
+
+            OrganisationMemberProfile.objects.filter(organisation=organisation, employee=employee).delete()
+            employee.organisations.remove(organisation)
+            return Response(status=status.HTTP_204_NO_CONTENT)
 
         employee_id = request.data.get('employee') or request.data.get('id')
         if not employee_id:

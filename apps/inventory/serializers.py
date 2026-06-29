@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.organisations.models import Organisation
+
 from .models import Asset, AssetAttribute, AssetType, SoftwareLicense
 
 
@@ -23,12 +25,13 @@ class AssetAttributeSerializer(serializers.ModelSerializer):
 
 class AssetSerializer(serializers.ModelSerializer):
     asset_type_name = serializers.CharField(source='asset_type.name', read_only=True)
+    organisation_detail = serializers.SerializerMethodField()
     attribute_values_with_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Asset
         fields = [
-            'id', 'asset_id', 'asset_type', 'asset_type_name',
+            'id', 'asset_id', 'organisation', 'organisation_detail', 'asset_type', 'asset_type_name',
             'serial_number', 'status', 'purchase_date', 'purchase_cost',
             'warranty_expiry', 'vendor', 'notes', 'attribute_values',
             'attribute_values_with_names',
@@ -70,12 +73,25 @@ class AssetSerializer(serializers.ModelSerializer):
         
         return result
 
+    def get_organisation_detail(self, obj):
+        organisation = obj.organisation
+        if not organisation:
+            return None
+        return {
+            'id': organisation.id,
+            'name': organisation.name,
+            'is_base': organisation.is_base,
+        }
+
 
 class AssetCreateSerializer(serializers.Serializer):
     """
     Accepts asset_type as a string name (get_or_create) so the frontend
     doesn't need to manage AssetType IDs.
     """
+    organisation = serializers.PrimaryKeyRelatedField(
+        queryset=Organisation.objects.all(), required=False, allow_null=True, default=None
+    )
     asset_type = serializers.CharField(max_length=100)
     asset_id = serializers.CharField(max_length=100)
     serial_number = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
@@ -111,11 +127,12 @@ class AssetCreateSerializer(serializers.Serializer):
 
 class SoftwareLicenseSerializer(serializers.ModelSerializer):
     used_seats = serializers.SerializerMethodField()
+    organisation_detail = serializers.SerializerMethodField()
 
     class Meta:
         model = SoftwareLicense
         fields = [
-            'id', 'software_name', 'license_key', 'vendor',
+            'id', 'software_name', 'organisation', 'organisation_detail', 'license_key', 'vendor',
             'total_seats', 'available_seats', 'used_seats',
             'license_type', 'expiry_date', 'purchase_date', 'cost',
             'status', 'attribute_values', 'notes',
@@ -125,6 +142,16 @@ class SoftwareLicenseSerializer(serializers.ModelSerializer):
 
     def get_used_seats(self, obj):
         return obj.total_seats - obj.available_seats
+
+    def get_organisation_detail(self, obj):
+        organisation = obj.organisation
+        if not organisation:
+            return None
+        return {
+            'id': organisation.id,
+            'name': organisation.name,
+            'is_base': organisation.is_base,
+        }
 
     def create(self, validated_data):
         # Initialise available_seats to match total_seats on creation

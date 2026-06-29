@@ -114,6 +114,15 @@ const getOrgInitials = (name = '') => (
     .slice(0, 2) || 'OR'
 );
 
+const extractErrorMessage = (error, fallback) => {
+  const responseData = error?.response?.data;
+  if (!responseData) return fallback;
+  if (typeof responseData === 'string') return responseData;
+  if (responseData.detail) return responseData.detail;
+  const firstValue = Object.values(responseData).flat().find(Boolean);
+  return firstValue || fallback;
+};
+
 function OrganisationLogo({ org, size = 52 }) {
   const logoUrl = getLogoUrl(org.logo);
 
@@ -172,6 +181,7 @@ function Organisations() {
   const [memberForm, setMemberForm] = useState(INITIAL_MEMBER_FORM);
   const [editMember, setEditMember] = useState(null);
   const [editForm, setEditForm] = useState(INITIAL_EDIT_FORM);
+  const [deleteMember, setDeleteMember] = useState(null);
   const [selectedClientOrgId, setSelectedClientOrgId] = useState('');
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
   const [message, setMessage] = useState({ type: '', text: '' });
@@ -284,6 +294,10 @@ function Organisations() {
     setEditForm(INITIAL_EDIT_FORM);
   };
 
+  const handleCloseDeleteMember = () => {
+    setDeleteMember(null);
+  };
+
   const handleCreateOrganisation = async () => {
     const { name, address, city, country, logo } = orgForm;
     if (!name || !address || !city || !country) {
@@ -308,7 +322,7 @@ function Organisations() {
       setOrgForm(INITIAL_ORG_FORM);
       await loadData();
     } catch (error) {
-      const text = error.response?.data?.detail || 'Unable to create organisation.';
+      const text = extractErrorMessage(error, 'Unable to create organisation.');
       setMessage({ type: 'error', text });
     } finally {
       setLoading(false);
@@ -326,11 +340,6 @@ function Organisations() {
       return;
     }
 
-    if (memberAddType === 'create' && !memberForm.employee_id) {
-      setMessage({ type: 'error', text: 'Employee ID is required.' });
-      return;
-    }
-
     const payload = {
       employee_ids: memberAddType === 'assign' ? selectedEmployeeIds : [],
       new_members: [],
@@ -338,7 +347,7 @@ function Organisations() {
 
     if (memberAddType === 'create') {
       if (!memberForm.full_name || !memberForm.official_email) {
-        setMessage({ type: 'error', text: 'New member requires ID, name, and email.' });
+        setMessage({ type: 'error', text: 'New member requires name and email.' });
         return;
       }
       payload.new_members.push({
@@ -359,10 +368,7 @@ function Organisations() {
       await loadData();
       await loadClientMembers(selectedClientOrgId);
     } catch (error) {
-      const text = typeof error.response?.data === 'string'
-        ? error.response.data
-        : error.response?.data?.detail || 'Unable to add members.';
-      setMessage({ type: 'error', text });
+      setMessage({ type: 'error', text: extractErrorMessage(error, 'Unable to add members.') });
     } finally {
       setLoading(false);
     }
@@ -389,13 +395,32 @@ function Organisations() {
       handleCloseEditMember();
       await loadClientMembers(selectedClientOrgId);
     } catch (error) {
+      setMessage({ type: 'error', text: extractErrorMessage(error, 'Unable to update employee details.') });
+    } finally {
+      setSavingMember(false);
+    }
+  };
+
+  const handleDeleteMember = async () => {
+    if (!deleteMember || !selectedClientOrgId) return;
+
+    try {
+      setLoading(true);
+      await api.delete(`/organisations/${selectedClientOrgId}/member-profiles/`, {
+        data: { employee: deleteMember.employee || deleteMember.id },
+      });
+      setMessage({ type: 'success', text: 'Employee removed from client organisation.' });
+      handleCloseDeleteMember();
+      await loadData();
+      await loadClientMembers(selectedClientOrgId);
+    } catch (error) {
       const responseData = error.response?.data;
       const text = responseData?.detail ||
         (typeof responseData === 'object' ? Object.values(responseData).flat().join(' ') : '') ||
-        'Unable to update employee details.';
+        'Unable to delete employee from client organisation.';
       setMessage({ type: 'error', text });
     } finally {
-      setSavingMember(false);
+      setLoading(false);
     }
   };
 
@@ -529,11 +554,18 @@ function Organisations() {
       sortable: false,
       filterable: false,
       renderCell: ({ row }) => (
-        <Tooltip title="Edit employee">
-          <IconButton size="small" onClick={() => openEditMember(row)}>
-            <EditIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
+        <Stack direction="row" spacing={0.5}>
+          <Tooltip title="Edit employee">
+            <IconButton size="small" onClick={() => openEditMember(row)}>
+              <EditIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Delete employee">
+            <IconButton size="small" color="error" onClick={() => setDeleteMember(row)}>
+              <DeleteIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        </Stack>
       ),
     },
   ];
@@ -609,8 +641,10 @@ function Organisations() {
                       rows={clientMembers}
                       columns={memberColumns}
                       loading={loading}
+                      onRefresh={() => loadClientMembers(selectedClientOrgId)}
                       searchable
                       pageSize={5}
+                      refreshLabel="Refresh"
                     />
                   )}
                 </Paper>
@@ -688,11 +722,13 @@ function Organisations() {
                           Register a new employee profile directly under {selectedClientOrg?.name}.
                         </Typography>
                         <TextField
-                          label="Employee ID"
+                          label="Employee ID (optional)"
                           value={memberForm.employee_id}
                           onChange={handleMemberFormChange('employee_id')}
                           fullWidth
                           size="small"
+                          helperText="Leave blank and the system will assign one automatically."
+                          FormHelperTextProps={{ sx: { ml: 0 } }}
                           sx={{ mb: 2 }}
                         />
                         <TextField
@@ -731,7 +767,7 @@ function Organisations() {
                       <Button
                         variant="contained"
                         onClick={handleAddMembers}
-                        disabled={loading || !memberForm.employee_id || !memberForm.full_name || !memberForm.official_email}
+                        disabled={loading || !memberForm.full_name || !memberForm.official_email}
                         sx={{ mt: 2, alignSelf: 'flex-end' }}
                       >
                         Create Member
@@ -1201,6 +1237,26 @@ function Organisations() {
           </Button>
           <Button variant="contained" onClick={handleSaveMember} disabled={savingMember}>
             {savingMember ? 'Saving...' : 'Save'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(deleteMember)} onClose={handleCloseDeleteMember} fullScreen={fullScreen}>
+        <DialogTitle>Delete Client Employee</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Remove {deleteMember?.full_name || deleteMember?.display_name || 'this employee'} from the selected client organisation?
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            This will detach the employee from the client organisation and delete the client profile for this organisation.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseDeleteMember} sx={{ color: 'text.secondary' }}>
+            Cancel
+          </Button>
+          <Button variant="contained" color="error" onClick={handleDeleteMember} disabled={loading}>
+            Delete
           </Button>
         </DialogActions>
       </Dialog>

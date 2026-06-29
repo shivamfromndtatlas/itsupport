@@ -183,8 +183,10 @@ function UserManagement() {
         rows={rows}
         columns={columns}
         loading={loading}
+        onRefresh={fetchUsers}
         onAdd={openAdd}
         addLabel="Add User"
+        refreshLabel="Refresh"
         searchable
       />
 

@@ -353,8 +353,10 @@ function InventoryConfig() {
               rows={assetTypes}
               columns={typeColumns}
               loading={typeLoading}
+              onRefresh={fetchAssetTypes}
               onAdd={openAddType}
               addLabel="Add Asset Type"
+              refreshLabel="Refresh"
               searchable
             />
           </TabPanel>
@@ -363,8 +365,10 @@ function InventoryConfig() {
               rows={attributes}
               columns={attrColumns}
               loading={attrLoading}
+              onRefresh={fetchAttributes}
               onAdd={openAddAttr}
               addLabel="Add Attribute"
+              refreshLabel="Refresh"
               searchable
             />
           </TabPanel>

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Box,
@@ -75,30 +75,23 @@ function EmployeeDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    let active = true;
-
-    const load = async () => {
-      setLoading(true);
-      setError('');
-      try {
-        const { data } = await api.get(`/employees/${employeeId}/dashboard/`);
-        if (active) setEmployee(data);
-      } catch (err) {
-        if (active) {
-          setEmployee(null);
-          setError(err.response?.data?.detail || 'Unable to load employee dashboard.');
-        }
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-
-    load();
-    return () => {
-      active = false;
-    };
+  const loadEmployee = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const { data } = await api.get(`/employees/${employeeId}/dashboard/`);
+      setEmployee(data);
+    } catch (err) {
+      setEmployee(null);
+      setError(err.response?.data?.detail || 'Unable to load employee dashboard.');
+    } finally {
+      setLoading(false);
+    }
   }, [employeeId]);
+
+  useEffect(() => {
+    loadEmployee();
+  }, [loadEmployee]);
 
   const assignedAssets = useMemo(() => {
     const rows = employee?.assigned_assets || [];
@@ -252,13 +245,20 @@ function EmployeeDashboard() {
         </Grid>
 
         <Grid item xs={12}>
-          <Paper sx={{ p: 3, borderRadius: 3 }}>
-            <Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>
-              Assigned Assets
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Detailed asset allocation history for this employee.
-            </Typography>
+      <Paper sx={{ p: 3, borderRadius: 3 }}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2} sx={{ mb: 1 }}>
+              <Box>
+                <Typography variant="h6" fontWeight={800}>
+                  Assigned Assets
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Detailed asset allocation history for this employee.
+                </Typography>
+              </Box>
+              <Button variant="outlined" size="small" onClick={loadEmployee}>
+                Refresh
+              </Button>
+            </Stack>
             <Divider sx={{ mb: 2 }} />
 
             {assignedAssets.length === 0 ? (

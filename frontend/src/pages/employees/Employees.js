@@ -27,6 +27,7 @@ import {
   Typography,
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
+import DeleteIcon from '@mui/icons-material/Delete';
 import DataTable from '../../components/common/DataTable';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
 import EmployeeLink from '../../components/common/EmployeeLink';
@@ -59,6 +60,25 @@ const EMPTY_FORM = {
   date_of_joining: '',
   status: 'active',
   organisations: [],
+};
+
+const buildEmployeePayload = (form) => ({
+  ...form,
+  date_of_joining: form.date_of_joining || null,
+  core_process_code: form.core_process_code || '',
+  alias_name: form.alias_name || '',
+  contact_number: form.contact_number || '',
+  designation: form.designation || '',
+  organisations: form.organisations || [],
+});
+
+const extractErrorMessage = (error, fallback) => {
+  const data = error?.response?.data;
+  if (!data) return fallback;
+  if (typeof data === 'string') return data;
+  if (data.detail) return data.detail;
+  const firstValue = Object.values(data).flat().find(Boolean);
+  return firstValue || fallback;
 };
 
 const getOrgInitials = (name = '') =>
@@ -211,11 +231,12 @@ function Employees() {
   const handleSave = async () => {
     setSaving(true);
     try {
+      const payload = buildEmployeePayload(form);
       if (editRow) {
-        await api.patch(`/employees/${editRow.id}/`, form);
+        await api.patch(`/employees/${editRow.id}/`, payload);
         showSnack('Employee updated.');
       } else {
-        await api.post('/employees/', form);
+        await api.post('/employees/', payload);
         showSnack('Employee added.');
       }
       setDialogOpen(false);
@@ -224,7 +245,7 @@ function Employees() {
         coreProcessCode: selectedCoreProcessCode,
       });
     } catch (err) {
-      showSnack(err.response?.data?.detail || 'Save failed.', 'error');
+      showSnack(extractErrorMessage(err, 'Save failed.'), 'error');
     } finally {
       setSaving(false);
     }
@@ -315,6 +336,15 @@ function Employees() {
                     <EditIcon fontSize="small" />
                   </IconButton>
                 </Tooltip>
+                <Tooltip title="Delete">
+                  <IconButton
+                    size="small"
+                    color="error"
+                    onClick={() => setConfirmDialog({ open: true, row })}
+                  >
+                    <DeleteIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
               </Box>
             ),
           },
@@ -390,8 +420,10 @@ function Employees() {
         rows={rows}
         columns={columns}
         loading={loading}
+        onRefresh={() => fetchEmployees({ organisationId: selectedOrganisationId, coreProcessCode: selectedCoreProcessCode })}
         onAdd={canEdit ? openAdd : undefined}
         addLabel="Add Employee"
+        refreshLabel="Refresh"
         searchable
       />
 
@@ -400,7 +432,7 @@ function Employees() {
         <DialogContent sx={{ pt: '12px !important' }}>
           <Grid container spacing={2}>
             {[
-              { name: 'employee_id', label: 'Employee ID', disabled: !!editRow },
+              { name: 'employee_id', label: 'Employee ID' },
               { name: 'full_name', label: 'Full Name' },
               { name: 'alias_name', label: 'Alias Name' },
               { name: 'official_email', label: 'Email', type: 'email' },

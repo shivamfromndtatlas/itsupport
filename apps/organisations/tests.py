@@ -124,6 +124,45 @@ class OrganisationTests(APITestCase):
         employee_ids = [row['employee_id'] for row in list_response.data]
         self.assertNotIn('EMP003', employee_ids)
 
+    def test_create_client_member_without_employee_id_generates_one(self):
+        Organisation.objects.create(
+            name='Base Org',
+            address='123 Corporate Street',
+            city='Mumbai',
+            country='India',
+            is_base=True,
+        )
+        client_org = Organisation.objects.create(
+            name='Client Org',
+            address='55 Client Lane',
+            city='Bengaluru',
+            country='India',
+            is_base=False,
+        )
+
+        response = self.client.post(
+            reverse('organisation-add-members', kwargs={'pk': client_org.id}),
+            {
+                'employee_ids': [],
+                'new_members': [
+                    {
+                        'full_name': 'New Client Employee',
+                        'official_email': 'newclient2@example.com',
+                        'contact_number': '1122334455',
+                    }
+                ],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        employee = Employee.objects.get(official_email='newclient2@example.com')
+        self.assertTrue(employee.employee_id.startswith('AUTO-'))
+        self.assertTrue(employee.organisations.filter(id=client_org.id).exists())
+        self.assertTrue(
+            OrganisationMemberProfile.objects.filter(organisation=client_org, employee=employee).exists()
+        )
+
     def test_client_member_profile_update_does_not_change_employee_record(self):
         base_org = Organisation.objects.create(
             name='Base Org',
@@ -166,6 +205,45 @@ class OrganisationTests(APITestCase):
         employee.refresh_from_db()
         self.assertEqual(employee.official_email, 'agoel@ndtatlas.com')
         self.assertEqual(employee.designation, '')
+
+    def test_client_member_can_be_deleted_from_organisation(self):
+        base_org = Organisation.objects.create(
+            name='Base Org',
+            address='123 Corporate Street',
+            city='Mumbai',
+            country='India',
+            is_base=True,
+        )
+        client_org = Organisation.objects.create(
+            name='Client Org',
+            address='55 Client Lane',
+            city='Bengaluru',
+            country='India',
+            is_base=False,
+        )
+        employee = Employee.objects.create(
+            employee_id='EMP005',
+            full_name='Delete Me',
+            alias_name='DM',
+            official_email='deleteme@example.com',
+            contact_number='',
+        )
+        employee.organisations.add(base_org, client_org)
+        OrganisationMemberProfile.objects.create(organisation=client_org, employee=employee)
+
+        response = self.client.delete(
+            reverse('organisation-member-profiles', kwargs={'pk': client_org.id}),
+            {'employee': employee.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 204)
+        employee.refresh_from_db()
+        self.assertTrue(employee.organisations.filter(id=base_org.id).exists())
+        self.assertFalse(employee.organisations.filter(id=client_org.id).exists())
+        self.assertFalse(
+            OrganisationMemberProfile.objects.filter(organisation=client_org, employee=employee).exists()
+        )
 
     def test_update_location(self):
         Organisation.objects.create(

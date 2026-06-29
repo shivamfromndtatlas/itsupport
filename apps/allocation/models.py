@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from django.db import models
 import uuid
 
@@ -27,7 +28,13 @@ class AssetAllocation(models.Model):
         ordering = ['-assigned_date']
 
     def __str__(self):
-        return f'{self.asset.asset_id} → {self.employee.full_name}'
+        return f'{self.asset.asset_id} -> {self.employee.full_name}'
+
+    def clean(self):
+        super().clean()
+        asset_org_id = getattr(self.asset, 'organisation_id', None)
+        if asset_org_id and not self.employee.organisations.filter(id=asset_org_id).exists():
+            raise ValidationError('This employee does not belong to the asset organisation.')
 
 
 class LicenseAllocation(models.Model):
@@ -53,4 +60,10 @@ class LicenseAllocation(models.Model):
         ordering = ['-assigned_date']
 
     def __str__(self):
-        return f'{self.license.software_name} → {self.employee.full_name}'
+        return f'{self.license.software_name} -> {self.employee.full_name}'
+
+    def clean(self):
+        super().clean()
+        license_org_id = getattr(self.license, 'organisation_id', None)
+        if license_org_id and not self.employee.organisations.filter(id=license_org_id).exists():
+            raise ValidationError('This employee does not belong to the licence organisation.')

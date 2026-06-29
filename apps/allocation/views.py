@@ -55,7 +55,11 @@ class AssetAllocationViewSet(viewsets.ModelViewSet):
         return [IsAuthenticated()]
 
     def perform_create(self, serializer):
-        allocation = serializer.save(assigned_by=self.request.user, status='active')
+        allocation = AssetAllocation(**serializer.validated_data)
+        allocation.assigned_by = self.request.user
+        allocation.status = 'active'
+        allocation.full_clean()
+        allocation.save()
         # Generate QR code
         generate_qr_code(allocation)
         allocation.save()
@@ -140,7 +144,11 @@ class LicenseAllocationViewSet(viewsets.ModelViewSet):
         if license_obj.available_seats <= 0:
             from rest_framework.exceptions import ValidationError
             raise ValidationError('No available seats for this licence.')
-        allocation = serializer.save(assigned_by=self.request.user, status='active')
+        allocation = LicenseAllocation(**serializer.validated_data)
+        allocation.assigned_by = self.request.user
+        allocation.status = 'active'
+        allocation.full_clean()
+        allocation.save()
         # Decrement available seats
         license_obj.available_seats -= 1
         license_obj.save(update_fields=['available_seats'])

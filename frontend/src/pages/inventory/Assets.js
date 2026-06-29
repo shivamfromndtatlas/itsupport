@@ -13,6 +13,9 @@ import {
   TextField,
   Button,
   MenuItem,
+  FormControl,
+  InputLabel,
+  Select,
   Chip,
   IconButton,
   Tooltip,
@@ -41,6 +44,7 @@ const CONDITION_CHOICES = ['Good', 'Fair', 'Poor'];
 const SYSTEM_ASSET_ATTRIBUTE_NAMES = new Set(['asset id', 'asset type', 'status', 'condition']);
 
 const EMPTY_ASSET = {
+  organisation: '',
   asset_type: '',
   asset_id: '',
   serial_number: '',
@@ -52,6 +56,7 @@ const EMPTY_ASSET = {
 };
 
 const EMPTY_LICENSE = {
+  organisation: '',
   software_name: '',
   license_key: '',
   total_seats: '',
@@ -95,11 +100,13 @@ function Assets() {
   const [confirmLicense, setConfirmLicense] = useState({ open: false, row: null });
 
   const [assetTypes, setAssetTypes] = useState([]);
+  const [organisations, setOrganisations] = useState([]);
   const [assetAttributes, setAssetAttributes] = useState([]);
   const [licenseTypeChoices, setLicenseTypeChoices] = useState([]);
   const [hardwareAssetTypeFilter] = useState([]);
   const [softwareAssetTypeFilter, setSoftwareAssetTypeFilter] = useState([]);
   const [selectedHwTypeName, setSelectedHwTypeName] = useState('');
+  const [selectedOrganisationId, setSelectedOrganisationId] = useState('');
 
   const [snack, setSnack] = useState({ open: false, msg: '', severity: 'success' });
   const showSnack = (msg, severity = 'success') => setSnack({ open: true, msg, severity });
@@ -138,6 +145,11 @@ function Assets() {
     });
   }, [licenses, softwareAssetTypeFilter]);
 
+  const selectedOrganisation = useMemo(
+    () => organisations.find((org) => String(org.id) === String(selectedOrganisationId)) || null,
+    [organisations, selectedOrganisationId]
+  );
+
   const fetchChoices = useCallback(async () => {
     try {
       const [typesRes, licenseTypeRes] = await Promise.all([
@@ -163,7 +175,9 @@ function Assets() {
   const fetchAssets = useCallback(async () => {
     setAssetLoading(true);
     try {
-      const res = await api.get('/inventory/assets/?source=portal');
+      const params = new URLSearchParams({ source: 'portal' });
+      if (selectedOrganisationId) params.set('organisation_id', selectedOrganisationId);
+      const res = await api.get(`/inventory/assets/?${params.toString()}`);
       const data = Array.isArray(res.data) ? res.data : res.data.results || [];
       setAssets(data.map((a) => ({ ...a, id: a.id || a.asset_id })));
     } catch {
@@ -176,7 +190,9 @@ function Assets() {
   const fetchLicenses = useCallback(async () => {
     setLicenseLoading(true);
     try {
-      const res = await api.get('/inventory/software-licenses/');
+      const params = new URLSearchParams();
+      if (selectedOrganisationId) params.set('organisation_id', selectedOrganisationId);
+      const res = await api.get(`/inventory/software-licenses/${params.toString() ? `?${params.toString()}` : ''}`);
       const data = Array.isArray(res.data) ? res.data : res.data.results || [];
       setLicenses(data.map((l) => ({ ...l, id: l.id || l.pk })));
     } catch {
@@ -192,6 +208,17 @@ function Assets() {
     fetchAssets();
     fetchLicenses();
   }, [fetchChoices, fetchAssetAttributes, fetchAssets, fetchLicenses]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api.get('/organisations/');
+        setOrganisations(Array.isArray(res.data) ? res.data : res.data.results || []);
+      } catch {
+        showSnack('Failed to load organisations.', 'error');
+      }
+    })();
+  }, []);
 
   const selectedAssetType = useMemo(
     () => assetTypes.find((type) => type.name === assetForm.asset_type),
@@ -245,6 +272,7 @@ function Assets() {
   const buildAssetPayload = () => {
     const payload = {
       asset_type: assetForm.asset_type,
+      organisation: assetForm.organisation || null,
       asset_id: assetForm.asset_id,
       serial_number: assetForm.serial_number,
       vendor: assetForm.vendor,
@@ -330,6 +358,11 @@ function Assets() {
     setEditAsset(row);
     setAssetForm({
       asset_type: row.asset_type_name || row.asset_type || '',
+      organisation: row.organisation_detail?.id
+        ? String(row.organisation_detail.id)
+        : row.organisation
+          ? String(row.organisation)
+          : '',
       asset_id: row.asset_id || '',
       serial_number: row.serial_number || '',
       vendor: row.vendor || '',
@@ -443,6 +476,11 @@ function Assets() {
     setEditLicense(row);
     setLicenseForm({
       software_name: row.software_name || '',
+      organisation: row.organisation_detail?.id
+        ? String(row.organisation_detail.id)
+        : row.organisation
+          ? String(row.organisation)
+          : '',
       license_key: row.license_key || '',
       total_seats: row.total_seats || '',
       vendor: row.vendor || '',
@@ -487,6 +525,12 @@ function Assets() {
 
   const assetColumns = useMemo(() => [
     { field: 'asset_id', headerName: 'Asset ID', width: 130 },
+    {
+      field: 'organisation_detail',
+      headerName: 'Organisation',
+      width: 170,
+      valueGetter: (_, row) => row.organisation_detail?.name || row.organisation?.name || '--',
+    },
     { field: 'asset_type_name', headerName: 'Type', width: 120 },
     {
       field: 'status',
@@ -525,6 +569,12 @@ function Assets() {
 
   const licenseColumns = [
     { field: 'software_name', headerName: 'Software Name', flex: 1, minWidth: 150 },
+    {
+      field: 'organisation_detail',
+      headerName: 'Organisation',
+      width: 170,
+      valueGetter: (_, row) => row.organisation_detail?.name || row.organisation?.name || '--',
+    },
     {
       field: 'license_key',
       headerName: 'License Key',
@@ -575,10 +625,30 @@ function Assets() {
         IT Assets
       </Typography>
       <Paper sx={{ borderRadius: 2 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2, px: 2, pt: 2, alignItems: 'center' }}>
+          <Typography variant="body2" color="text.secondary">
+            {selectedOrganisation ? `Viewing ${selectedOrganisation.name}` : 'Viewing all organisations'}
+          </Typography>
+          <TextField
+            select
+            size="small"
+            label="Organisation"
+            value={selectedOrganisationId}
+            onChange={(e) => setSelectedOrganisationId(e.target.value)}
+            sx={{ minWidth: 260 }}
+          >
+            <MenuItem value="">All organisations</MenuItem>
+            {organisations.map((org) => (
+              <MenuItem key={org.id} value={String(org.id)}>
+                {org.name}
+              </MenuItem>
+            ))}
+          </TextField>
+        </Box>
         <Tabs
           value={tab}
           onChange={(_, v) => setTab(v)}
-          sx={{ borderBottom: 1, borderColor: 'divider', px: 2 }}
+          sx={{ borderBottom: 1, borderColor: 'divider', px: 2, mt: 1 }}
         >
           <Tab label="Hardware Assets" />
           <Tab label="Software Licenses" />
@@ -648,9 +718,11 @@ function Assets() {
                     return [...base.slice(0, base.length - 1), ...attrCols, base[base.length - 1]];
                   }, [assetColumns, assetAttributes, assetTypes, selectedHwTypeName])}
                   loading={assetLoading}
+                  onRefresh={fetchAssets}
                   onRowClick={({ row }) => navigate(`/inventory/assets/${row.id}`)}
                   onAdd={openAddAsset}
                   addLabel="Add Asset"
+                  refreshLabel="Refresh"
                   searchable
                   toolbar={
                     <Button variant="outlined" onClick={openBulkUpload}>
@@ -666,8 +738,10 @@ function Assets() {
               rows={filteredLicenses}
               columns={licenseColumns}
               loading={licenseLoading}
+              onRefresh={fetchLicenses}
               onAdd={openAddLicense}
               addLabel="Add License"
+              refreshLabel="Refresh"
               searchable
               toolbar={
                 <TextField
@@ -754,6 +828,22 @@ function Assets() {
             <Grid item xs={12} sm={6}>
               <TextField
                 select
+                label="Organisation"
+                fullWidth
+                value={assetForm.organisation}
+                onChange={(e) => setAssetForm({ ...assetForm, organisation: e.target.value })}
+              >
+                <MenuItem value="">Unassigned</MenuItem>
+                {organisations.map((org) => (
+                  <MenuItem key={org.id} value={String(org.id)}>
+                    {org.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                select
                 label="Asset Type"
                 fullWidth
                 value={assetForm.asset_type}
@@ -817,6 +907,22 @@ function Assets() {
         <DialogTitle>{editLicense ? 'Edit License' : 'Add License'}</DialogTitle>
         <DialogContent sx={{ pt: '12px !important' }}>
           <Grid container spacing={2}>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                select
+                label="Organisation"
+                fullWidth
+                value={licenseForm.organisation}
+                onChange={(e) => setLicenseForm({ ...licenseForm, organisation: e.target.value })}
+              >
+                <MenuItem value="">Unassigned</MenuItem>
+                {organisations.map((org) => (
+                  <MenuItem key={org.id} value={String(org.id)}>
+                    {org.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
             <Grid item xs={12} sm={6}>
               <TextField
                 label="Software Name"

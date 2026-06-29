@@ -226,7 +226,9 @@ function Onboarding() {
               rows={rows}
               columns={columns}
               loading={loading}
+              onRefresh={fetchRequests}
               searchable
+              refreshLabel="Refresh"
             />
           </TabPanel>
 

@@ -96,9 +96,11 @@ function AssetAllocation() {
     if (!selectedCategory) return [];
     return availableAssets.filter((asset) => {
       const status = String(asset.status || '').toLowerCase();
+      const assetTypeId = asset.asset_type?.id ?? asset.asset_type;
+      const assetTypeName = asset.asset_type_name || asset.asset_type?.name || '';
       return (
         status === 'available' &&
-        String(asset.asset_type) === String(selectedCategory) &&
+        (String(assetTypeId) === String(selectedCategory) || String(assetTypeName) === String(selectedCategory)) &&
         !allocatedAssetIds.has(String(asset.id))
       );
     });
@@ -451,8 +453,10 @@ function AssetAllocation() {
               rows={filteredHwAllocations}
               columns={hwColumns}
               loading={hwLoading}
+              onRefresh={fetchAll}
               onAdd={() => { setHwForm(EMPTY_HW_FORM); setSelectedCategory(''); setHwDialog(true); }}
               addLabel="Assign Asset"
+              refreshLabel="Refresh"
               searchable
               toolbar={
                 <TextField
@@ -478,8 +482,10 @@ function AssetAllocation() {
               rows={swAllocations}
               columns={swColumns}
               loading={swLoading}
+              onRefresh={fetchAll}
               onAdd={() => { setSwForm(EMPTY_SW_FORM); setSwDialog(true); }}
               addLabel="Assign License"
+              refreshLabel="Refresh"
               searchable
               toolbar={
                 <TextField
@@ -530,13 +536,13 @@ function AssetAllocation() {
                 fullWidth
                 value={selectedCategory}
                 onChange={(e) => {
-                  setSelectedCategory(e.target.value);
+                  setSelectedCategory(String(e.target.value));
                   setHwForm({ ...hwForm, asset: '' });
                 }}
               >
                 <MenuItem value="">Select Category</MenuItem>
                 {assetTypeOptions.map((type) => (
-                  <MenuItem key={type.id} value={type.id}>
+                  <MenuItem key={type.id} value={String(type.id)}>
                     {type.name}
                   </MenuItem>
                 ))}

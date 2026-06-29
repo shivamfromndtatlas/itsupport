@@ -10,6 +10,7 @@ import {
   useTheme,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
 
 function DataTable({
@@ -17,6 +18,8 @@ function DataTable({
   columns = [],
   loading = false,
   onAdd,
+  onRefresh,
+  refreshLabel = 'Refresh',
   addLabel = 'Add',
   title,
   searchable = false,
@@ -91,19 +94,32 @@ function DataTable({
           )}
         </Box>
 
-        {/* Add button */}
-        {onAdd && (
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={onAdd}
-            size="small"
-            fullWidth={isMobile}
-            sx={{ height: 36, px: 2, flexShrink: 0 }}
-          >
-            {addLabel}
-          </Button>
-        )}
+        <Box sx={{ display: 'flex', gap: 1, alignSelf: { xs: 'stretch', sm: 'center' }, flexWrap: 'wrap' }}>
+          {onRefresh && (
+            <Button
+              variant="outlined"
+              startIcon={<RefreshIcon />}
+              onClick={onRefresh}
+              size="small"
+              fullWidth={isMobile}
+              sx={{ height: 36, px: 2, flexShrink: 0 }}
+            >
+              {refreshLabel}
+            </Button>
+          )}
+          {onAdd && (
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={onAdd}
+              size="small"
+              fullWidth={isMobile}
+              sx={{ height: 36, px: 2, flexShrink: 0 }}
+            >
+              {addLabel}
+            </Button>
+          )}
+        </Box>
       </Box>
 
       {/* Table with horizontal scroll on small screens */}
