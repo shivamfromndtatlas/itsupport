@@ -122,15 +122,19 @@ function DataTable({
         </Box>
       </Box>
 
-      {/* Table with horizontal scroll on small screens */}
+      {/* Table: the grid keeps horizontal scrolling inside itself so the
+          page never scrolls sideways. Requires a width-constrained parent
+          (flex children must set minWidth: 0). */}
       <Box
         sx={{
           width: '100%',
-          overflowX: 'auto',
-          WebkitOverflowScrolling: 'touch',
-          borderRadius: '10px',
+          minWidth: 0,
+          maxWidth: '100%',
+          borderRadius: '12px',
           border: '1px solid #E2E8F0',
           bgcolor: '#FFFFFF',
+          overflow: 'hidden',
+          boxShadow: '0 1px 2px rgba(15, 23, 42, 0.04)',
         }}
       >
         <DataGrid
@@ -142,30 +146,46 @@ function DataTable({
           }}
           pageSizeOptions={[5, 10, 25, 50]}
           disableRowSelectionOnClick
+          disableColumnMenu
           autoHeight
+          rowHeight={56}
+          columnHeaderHeight={48}
           sx={{
             border: 'none',
-            minWidth: isMobile ? 500 : 'auto',
+            width: '100%',
             fontSize: { xs: 12.5, sm: 13.5 },
+            // Keep the horizontal scrollbar attached to the grid body.
+            '& .MuiDataGrid-virtualScroller': {
+              overflowX: 'auto',
+              WebkitOverflowScrolling: 'touch',
+            },
+            '& .MuiDataGrid-scrollbar': { height: 10 },
             '& .MuiDataGrid-columnHeaders': {
               backgroundColor: '#F8FAFC',
               borderBottom: '1px solid #E2E8F0',
             },
+            '& .MuiDataGrid-columnHeader': {
+              '&:focus, &:focus-within': { outline: 'none' },
+            },
             '& .MuiDataGrid-columnHeaderTitle': {
               fontWeight: 700,
-              fontSize: 12,
+              fontSize: 11.5,
               color: '#64748B',
               textTransform: 'uppercase',
               letterSpacing: '0.05em',
             },
             '& .MuiDataGrid-row': {
               cursor: rest.onRowClick ? 'pointer' : 'default',
-              '&:hover': { backgroundColor: '#F8FAFC' },
+              transition: 'background-color 0.15s ease',
+              '&:nth-of-type(even)': { backgroundColor: '#FCFDFE' },
+              '&:hover': { backgroundColor: '#EEF2FF' },
               '&:last-child .MuiDataGrid-cell': { borderBottom: 'none' },
             },
             '& .MuiDataGrid-cell': {
               borderBottom: '1px solid #F1F5F9',
               color: '#1E293B',
+              display: 'flex',
+              alignItems: 'center',
               '&:focus': { outline: 'none' },
               '&:focus-within': { outline: 'none' },
             },

@@ -697,8 +697,8 @@ function Assets() {
         </Tabs>
         <Box sx={{ p: 2 }}>
           <TabPanel value={tab} index={0}>
-            <Box sx={{ display: 'flex', gap: 2 }}>
-              <Box sx={{ width: 220, borderRight: 1, borderColor: 'divider', pr: 1 }}>
+            <Box sx={{ display: 'flex', gap: 2, minWidth: 0 }}>
+              <Box sx={{ width: 220, flexShrink: 0, borderRight: 1, borderColor: 'divider', pr: 1 }}>
                 <Tabs
                   orientation="vertical"
                   value={selectedHwTypeName}
@@ -711,7 +711,7 @@ function Assets() {
                   ))}
                 </Tabs>
               </Box>
-              <Box sx={{ flex: 1 }}>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
                 <DataTable
                   rows={useMemo(() => {
                     // Map attribute values into fields for dynamic columns
