@@ -55,23 +55,47 @@ class AssetAllocationViewSet(viewsets.ModelViewSet):
         return [IsAuthenticated()]
 
     def perform_create(self, serializer):
-        allocation = AssetAllocation(**serializer.validated_data)
-        allocation.assigned_by = self.request.user
-        allocation.status = 'active'
-        allocation.full_clean()
-        allocation.save()
-        # Generate QR code
-        generate_qr_code(allocation)
-        allocation.save()
-        # Update asset status
-        asset = allocation.asset
-        asset.status = 'assigned'
-        asset.save(update_fields=['status'])
+        with transaction.atomic():
+            allocation = AssetAllocation(**serializer.validated_data)
+            allocation.assigned_by = self.request.user
+            allocation.status = 'active'
+            allocation.full_clean()
+            allocation.save()
+            # Generate QR code
+            generate_qr_code(allocation)
+            allocation.save()
+            # Update asset status
+            asset = allocation.asset
+            asset.status = 'assigned'
+            asset.save(update_fields=['status'])
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            old_allocation = self.get_object()
+            old_asset = old_allocation.asset
+            old_status = old_allocation.status
+
+            allocation = serializer.save()
+            allocation.full_clean()
+            allocation.save()
+
+            old_asset_id = getattr(old_asset, 'id', None)
+            if old_status == 'active' and old_asset_id:
+                if old_asset_id != allocation.asset_id:
+                    old_asset.status = 'available'
+                    old_asset.save(update_fields=['status'])
+
+            if allocation.status == 'active':
+                allocation.asset.status = 'assigned'
+                allocation.asset.save(update_fields=['status'])
+            elif allocation.status == 'recovered':
+                allocation.asset.status = 'available'
+                allocation.asset.save(update_fields=['status'])
 
     @action(detail=True, methods=['post'], url_path='recover')
     def recover(self, request, pk=None):
         """
-        Mark the allocation as recovered and return the asset to 'available'.
+        Mark the allocation as recovered and return the asset based on its condition.
         """
         allocation = self.get_object()
 
@@ -81,15 +105,30 @@ class AssetAllocationViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        allocation.status = 'recovered'
-        allocation.recovered_by = request.user
-        allocation.recovered_date = timezone.now().date()
-        allocation.save()
+        condition_value = str(request.data.get('condition') or '').strip() or 'Good'
+        condition_normalized = condition_value.lower()
+        is_ok_condition = condition_normalized in {'good', 'ok', 'okay', 'fair'}
+        availability_value = 'In Stock' if is_ok_condition else 'Under Repair'
+        asset_status = 'available' if is_ok_condition else 'maintenance'
 
-        # Return asset to available pool
-        asset = allocation.asset
-        asset.status = 'available'
-        asset.save(update_fields=['status'])
+        with transaction.atomic():
+            allocation.status = 'recovered'
+            allocation.recovered_by = request.user
+            allocation.recovered_date = timezone.now().date()
+            allocation.save(update_fields=['status', 'recovered_by', 'recovered_date'])
+
+            asset = allocation.asset
+            attribute_values = dict(asset.attribute_values or {})
+            condition_label = 'Good' if condition_normalized in {'good', 'ok', 'okay'} else 'Fair' if condition_normalized == 'fair' else condition_value
+            attribute_values['condition'] = condition_label
+            attribute_values['10'] = availability_value
+            attribute_values['Availability Status'] = availability_value
+
+            # Return asset to the right pool based on condition
+            asset = allocation.asset
+            asset.status = asset_status
+            asset.attribute_values = attribute_values
+            asset.save(update_fields=['status', 'attribute_values'])
 
         return Response(
             {

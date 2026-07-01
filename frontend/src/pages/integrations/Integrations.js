@@ -27,6 +27,8 @@ import KeyIcon from '@mui/icons-material/Key';
 import SaveIcon from '@mui/icons-material/Save';
 import SyncIcon from '@mui/icons-material/Sync';
 import WifiTetheringIcon from '@mui/icons-material/WifiTethering';
+import AccessTimeIcon from '@mui/icons-material/AccessTime';
+import PersonIcon from '@mui/icons-material/Person';
 import { DataGrid } from '@mui/x-data-grid';
 import api from '../../api/axios';
 
@@ -85,6 +87,29 @@ const flattenObject = (value, prefix = '') => {
   });
 };
 
+const formatIndianDateTime = (value) => {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat('en-IN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  }).format(date);
+};
+
+const formatActiveDuration = (value) => {
+  const totalMinutes = Number(value || 0);
+  if (Number.isNaN(totalMinutes) || totalMinutes < 0) return '0 hours 0 minutes';
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = Math.round(totalMinutes % 60);
+  return `${hours} hours ${minutes} minutes`;
+};
+
 const buildRawRows = (device) => {
   const normalized = Object.entries(device || {})
     .filter(([key]) => !['id', 'raw', 'platform_model'].includes(key))
@@ -118,6 +143,13 @@ function Integrations() {
   const [selectedPlatform, setSelectedPlatform] = useState('all');
   const [deviceSearch, setDeviceSearch] = useState('');
   const [selectedDevice, setSelectedDevice] = useState(null);
+  const today = new Date().toISOString().slice(0, 10);
+  const [activeTimeRange, setActiveTimeRange] = useState({ start_date: today, end_date: today });
+  const [activeTimeRows, setActiveTimeRows] = useState([]);
+  const [activeTimeSummary, setActiveTimeSummary] = useState(null);
+  const [activeTimeLoading, setActiveTimeLoading] = useState(false);
+  const [employees, setEmployees] = useState([]);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
 
   const showMessage = (severity, text) => setMessage({ severity, text });
 
@@ -155,15 +187,51 @@ function Integrations() {
     }
   };
 
+  const loadEmployees = async () => {
+    try {
+      const res = await api.get('/employees/?scope=allocatable');
+      setEmployees(res.data || []);
+    } catch (err) {
+      setEmployees([]);
+    }
+  };
+
+  const loadActiveTime = async (range = activeTimeRange, employeeId = selectedEmployeeId) => {
+    setActiveTimeLoading(true);
+    try {
+      const params = new URLSearchParams(range);
+      if (employeeId) params.set('employee_id', employeeId);
+      const res = await api.get(`/integrations/suremdm/active-time/?${params.toString()}`);
+      setActiveTimeRows((res.data?.results || []).map((row, index) => ({
+        row_key: `${row.date || 'no-date'}-${row.asset_id || row.suremdm_device_id || row.serial_number || row.name || index}`,
+        ...row,
+      })));
+      setActiveTimeSummary(res.data || null);
+    } catch (err) {
+      setActiveTimeRows([]);
+      setActiveTimeSummary(null);
+    } finally {
+      setActiveTimeLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadConnection();
+    loadEmployees();
   }, [loadConnection]);
 
   useEffect(() => {
     if (connection?.last_test_status === 'success') {
       loadDevices();
+      loadActiveTime();
     }
   }, [connection]);
+
+  useEffect(() => {
+    if (connection?.last_test_status === 'success') {
+      loadActiveTime(activeTimeRange, selectedEmployeeId);
+    }
+  }, [activeTimeRange.start_date, activeTimeRange.end_date, selectedEmployeeId]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -212,8 +280,42 @@ function Integrations() {
 
   const handleRefresh = async () => {
     await loadConnection();
+    await loadEmployees();
     await loadDevices();
+    await loadActiveTime();
   };
+
+  const activeTimeColumns = [
+    { field: 'date', headerName: 'Date', flex: 0.8, minWidth: 120 },
+    { field: 'asset_id', headerName: 'Laptop Asset ID', flex: 1, minWidth: 160 },
+    { field: 'name', headerName: 'Device', flex: 1, minWidth: 180 },
+    { field: 'serial_number', headerName: 'Serial Number', flex: 1, minWidth: 150 },
+    { field: 'category', headerName: 'Category', flex: 1, minWidth: 150 },
+    {
+      field: 'active_from',
+      headerName: 'Active From',
+      flex: 1,
+      minWidth: 190,
+      valueFormatter: ({ value }) => formatIndianDateTime(value),
+    },
+    {
+      field: 'logged_off_at',
+      headerName: 'Logged Off At',
+      flex: 1,
+      minWidth: 190,
+      valueFormatter: ({ value }) => formatIndianDateTime(value),
+    },
+    {
+      field: 'active_minutes',
+      headerName: 'Total Active Time',
+      flex: 0.9,
+      minWidth: 180,
+      valueFormatter: ({ value }) => formatActiveDuration(value),
+    },
+    { field: 'activity_source', headerName: 'Source', flex: 0.8, minWidth: 120 },
+  ];
+
+  const selectedEmployee = employees.find((employee) => String(employee.id) === String(selectedEmployeeId));
 
   const columns = [
     {
@@ -494,6 +596,130 @@ function Integrations() {
                     '& .MuiDataGrid-cell': { borderBottom: '1px solid #F1F5F9', '&:focus': { outline: 'none' }, '&:focus-within': { outline: 'none' } },
                     '& .MuiDataGrid-footerContainer': { borderTop: '1px solid #E2E8F0', backgroundColor: '#F8FAFC' },
                     '& .MuiDataGrid-columnSeparator': { display: 'none' },
+                  }}
+                />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12}>
+          <Card sx={{ borderRadius: 2, boxShadow: 2 }}>
+            <CardContent sx={{ p: 3 }}>
+              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
+                <Stack direction="row" alignItems="center" spacing={1}>
+                  <AccessTimeIcon color="primary" />
+                  <Typography variant="h6" fontWeight={700}>
+                    Daily Active Time
+                  </Typography>
+                </Stack>
+                <Button variant="outlined" size="small" onClick={() => loadActiveTime()} disabled={activeTimeLoading}>
+                  Refresh active time
+                </Button>
+              </Stack>
+
+              <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid item xs={12} sm={4}>
+                  <TextField
+                    select
+                    label="Select user"
+                    size="small"
+                    fullWidth
+                    value={selectedEmployeeId}
+                    onChange={(e) => setSelectedEmployeeId(e.target.value)}
+                  >
+                    <MenuItem value="">All users</MenuItem>
+                    {employees.map((employee) => (
+                      <MenuItem key={employee.id} value={employee.id}>
+                        {employee.full_name || employee.employee_id}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
+                <Grid item xs={12} sm={3}>
+                  <TextField
+                    label="Start date"
+                    type="date"
+                    size="small"
+                    fullWidth
+                    InputLabelProps={{ shrink: true }}
+                    value={activeTimeRange.start_date}
+                    onChange={(e) => setActiveTimeRange((prev) => ({ ...prev, start_date: e.target.value }))}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={3}>
+                  <TextField
+                    label="End date"
+                    type="date"
+                    size="small"
+                    fullWidth
+                    InputLabelProps={{ shrink: true }}
+                    value={activeTimeRange.end_date}
+                    onChange={(e) => setActiveTimeRange((prev) => ({ ...prev, end_date: e.target.value }))}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={5}>
+                  <Typography variant="body2" color="text.secondary" sx={{ pt: 1 }}>
+                    Choose a user, then a date range. We’ll resolve the assigned laptop and show its active minutes for that period.
+                  </Typography>
+                </Grid>
+              </Grid>
+
+              <Paper variant="outlined" sx={{ p: 2, mb: 2, bgcolor: 'grey.50' }}>
+                <Stack direction="row" alignItems="center" spacing={1}>
+                  <PersonIcon color="primary" />
+                  <Typography fontWeight={700}>
+                    {selectedEmployee ? `${selectedEmployee.full_name} (${selectedEmployee.employee_id})` : 'All users'}
+                  </Typography>
+                </Stack>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {activeTimeSummary?.selected_asset?.asset_id
+                    ? `Laptop: ${activeTimeSummary.selected_asset.asset_id}`
+                    : 'Pick a user with an assigned laptop to see a device-specific activity report.'}
+                </Typography>
+              </Paper>
+
+              <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid item xs={12} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2 }}>
+                    <Typography variant="caption" color="text.secondary">Total devices</Typography>
+                    <Typography variant="h5" fontWeight={800}>{activeTimeSummary?.total_devices ?? '--'}</Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2 }}>
+                    <Typography variant="caption" color="text.secondary">Total active minutes</Typography>
+                    <Typography variant="h5" fontWeight={800}>
+                      {formatActiveDuration(activeTimeSummary?.total_active_minutes)}
+                    </Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2 }}>
+                    <Typography variant="caption" color="text.secondary">Date range</Typography>
+                    <Typography variant="h6" fontWeight={800}>
+                      {activeTimeSummary?.start_date && activeTimeSummary?.end_date
+                        ? `${activeTimeSummary.start_date} to ${activeTimeSummary.end_date}`
+                        : '--'}
+                    </Typography>
+                  </Paper>
+                </Grid>
+              </Grid>
+
+              <Box sx={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                <DataGrid
+                  rows={activeTimeRows}
+                  columns={activeTimeColumns}
+                  getRowId={(row) => row.row_key}
+                  autoHeight
+                  loading={activeTimeLoading}
+                  pageSizeOptions={[10, 25]}
+                  initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+                  sx={{
+                    border: 'none',
+                    minWidth: 700,
+                    '& .MuiDataGrid-columnHeaders': { backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' },
+                    '& .MuiDataGrid-row': { cursor: 'default' },
                   }}
                 />
               </Box>

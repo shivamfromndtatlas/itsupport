@@ -31,6 +31,7 @@ import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumber';
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
 import LogoutIcon from '@mui/icons-material/Logout';
 import InventoryIcon from '@mui/icons-material/Inventory';
+import HistoryIcon from '@mui/icons-material/History';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
 import TuneIcon from '@mui/icons-material/Tune';
@@ -91,6 +92,7 @@ const NAV_SECTIONS = [
     items: [
       { label: 'User Management', icon: <AdminPanelSettingsIcon sx={{ fontSize: 20 }} />, path: '/users', roles: ['super_admin'] },
       { label: 'Organisations', icon: <PeopleIcon sx={{ fontSize: 20 }} />, path: '/organisations', roles: ['super_admin'] },
+      { label: 'Activity Log', icon: <HistoryIcon sx={{ fontSize: 20 }} />, path: '/activity-log', roles: ['super_admin'] },
     ],
   },
 ];

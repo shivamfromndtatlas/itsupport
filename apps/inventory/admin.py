@@ -2,6 +2,7 @@ from django.contrib import admin
 from .models import (
     AssetType,
     AssetAttribute,
+    AssetTypeAttributeRequirement,
     Asset,
     InstalledApplication,
     InstalledAppReportImport,
@@ -22,6 +23,13 @@ class AssetAttributeAdmin(admin.ModelAdmin):
     list_filter = ('field_type', 'is_common')
     search_fields = ('name',)
     filter_horizontal = ('asset_types',)
+
+
+@admin.register(AssetTypeAttributeRequirement)
+class AssetTypeAttributeRequirementAdmin(admin.ModelAdmin):
+    list_display = ('asset_type', 'attribute', 'requirement', 'updated_at')
+    list_filter = ('requirement', 'asset_type')
+    search_fields = ('asset_type__name', 'attribute__name')
 
 
 @admin.register(Asset)

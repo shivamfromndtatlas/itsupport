@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from apps.organisations.models import Organisation
 
-from .models import Asset, AssetAttribute, AssetType, SoftwareLicense
+from .models import Asset, AssetAttribute, AssetType, AssetTypeAttributeRequirement, SoftwareLicense
 
 
 class AssetTypeSerializer(serializers.ModelSerializer):
@@ -23,11 +23,35 @@ class AssetAttributeSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
 
+class AssetTypeAttributeRequirementSerializer(serializers.ModelSerializer):
+    asset_type_name = serializers.CharField(source='asset_type.name', read_only=True)
+    attribute_name = serializers.CharField(source='attribute.name', read_only=True)
+    attribute_field_type = serializers.CharField(source='attribute.field_type', read_only=True)
+
+    class Meta:
+        model = AssetTypeAttributeRequirement
+        fields = [
+            'id',
+            'asset_type',
+            'asset_type_name',
+            'attribute',
+            'attribute_name',
+            'attribute_field_type',
+            'requirement',
+            'notes',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'asset_type_name', 'attribute_name', 'attribute_field_type']
+
+
 class AssetSerializer(serializers.ModelSerializer):
     asset_type_name = serializers.CharField(source='asset_type.name', read_only=True)
     organisation_detail = serializers.SerializerMethodField()
     location_detail = serializers.SerializerMethodField()
     attribute_values_with_names = serializers.SerializerMethodField()
+    allocation_state = serializers.SerializerMethodField()
+    availability_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Asset
@@ -36,6 +60,8 @@ class AssetSerializer(serializers.ModelSerializer):
             'serial_number', 'status', 'purchase_date', 'purchase_cost',
             'warranty_expiry', 'vendor', 'notes', 'attribute_values',
             'attribute_values_with_names',
+            'allocation_state',
+            'availability_status',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
@@ -81,6 +107,7 @@ class AssetSerializer(serializers.ModelSerializer):
         return {
             'id': organisation.id,
             'name': organisation.name,
+            'logo': organisation.logo.url if organisation.logo else '',
             'is_base': organisation.is_base,
         }
 
@@ -96,6 +123,66 @@ class AssetSerializer(serializers.ModelSerializer):
             'city': location.city,
             'country': location.country,
         }
+
+    def get_allocation_state(self, obj):
+        from apps.allocation.models import AssetAllocation
+
+        allocation = (
+            AssetAllocation.objects.select_related('employee', 'assigned_by', 'recovered_by')
+            .filter(asset=obj)
+            .order_by('-assigned_date', '-created_at')
+            .first()
+        )
+        if not allocation:
+            return {
+                'status': 'unallocated',
+                'label': 'Unallocated',
+                'employee_name': '',
+                'allocation_id': None,
+            }
+        return {
+            'status': allocation.status,
+            'label': 'Active' if allocation.status == 'active' else 'Recovered',
+            'employee_name': allocation.employee.full_name if allocation.employee_id else '',
+            'allocation_id': allocation.id,
+            'assigned_date': allocation.assigned_date,
+            'recovered_date': allocation.recovered_date,
+        }
+
+    def get_availability_status(self, obj):
+        from apps.allocation.models import AssetAllocation
+
+        allocation = (
+            AssetAllocation.objects.select_related('employee')
+            .filter(asset=obj)
+            .order_by('-assigned_date', '-created_at')
+            .first()
+        )
+
+        attribute_values = obj.attribute_values or {}
+        if allocation and allocation.status == 'recovered':
+            condition_value = str(attribute_values.get('condition') or '').strip().lower()
+            if condition_value in {'good', 'ok', 'okay', 'fair'}:
+                return 'In Stock'
+            return 'Under Repair'
+
+        raw_value = (
+            attribute_values.get('Availability Status')
+            or attribute_values.get('availability status')
+            or attribute_values.get('10')
+            or ''
+        )
+        normalized = str(raw_value or '').strip().lower()
+        if normalized in {'in stock', 'issued', 'under repair', 'retired', 'reserved stock'}:
+            return raw_value
+
+        if obj.status == 'assigned':
+            return 'Issued'
+        if obj.status == 'maintenance':
+            return 'Under Repair'
+        if obj.status == 'retired':
+            return 'Retired'
+        return 'Reserved Stock'
 
 
 class AssetCreateSerializer(serializers.Serializer):
@@ -130,6 +217,32 @@ class AssetCreateSerializer(serializers.Serializer):
         location = attrs.get('location') or getattr(self.instance, 'location', None)
         if location and organisation and location.organisation_id != organisation.id:
             raise serializers.ValidationError({'location': 'Selected location must belong to the chosen organisation.'})
+
+        instance = getattr(self, 'instance', None)
+        asset_type_name = attrs.get('asset_type') or (getattr(instance.asset_type, 'name', None) if instance else None)
+        if asset_type_name:
+            asset_type = AssetType.objects.filter(name=asset_type_name).first()
+            if asset_type:
+                requirements = AssetTypeAttributeRequirement.objects.select_related('attribute').filter(asset_type=asset_type)
+                attribute_values = attrs.get('attribute_values') or {}
+                errors = {}
+                for requirement in requirements:
+                    key_candidates = {str(requirement.attribute.id), requirement.attribute.name}
+                    value = None
+                    for key in key_candidates:
+                        if key in attribute_values and attribute_values.get(key) not in (None, ''):
+                            value = attribute_values.get(key)
+                            break
+                    if requirement.requirement == 'mandatory' and value in (None, ''):
+                        errors.setdefault('attribute_values', []).append(
+                            f'{requirement.attribute.name} is mandatory for {asset_type.name}.'
+                        )
+                    if requirement.requirement == 'hidden' and value not in (None, ''):
+                        errors.setdefault('attribute_values', []).append(
+                            f'{requirement.attribute.name} must be hidden for {asset_type.name}.'
+                        )
+                if errors:
+                    raise serializers.ValidationError(errors)
         return attrs
 
     def create(self, validated_data):
@@ -179,6 +292,7 @@ class SoftwareLicenseSerializer(serializers.ModelSerializer):
         return {
             'id': organisation.id,
             'name': organisation.name,
+            'logo': organisation.logo.url if organisation.logo else '',
             'is_base': organisation.is_base,
         }
 

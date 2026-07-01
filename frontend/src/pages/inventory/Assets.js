@@ -13,9 +13,6 @@ import {
   TextField,
   Button,
   MenuItem,
-  FormControl,
-  InputLabel,
-  Select,
   Chip,
   IconButton,
   Tooltip,
@@ -33,15 +30,34 @@ import DataTable from '../../components/common/DataTable';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
 import api from '../../api/axios';
 
-const ASSET_STATUS_COLORS = {
-  available: 'success',
-  assigned: 'primary',
-  maintenance: 'warning',
-  retired: 'default',
+const CONDITION_CHOICES = ['Good', 'Fair', 'Poor'];
+const SYSTEM_ASSET_ATTRIBUTE_NAMES = new Set(['asset id', 'asset type', 'status', 'availability status', 'condition']);
+
+const AVAILABILITY_STATUS_COLORS = {
+  'In Stock': 'success',
+  Issued: 'primary',
+  'Under Repair': 'warning',
+  Retired: 'default',
+  'Reserved Stock': 'warning',
 };
 
-const CONDITION_CHOICES = ['Good', 'Fair', 'Poor'];
-const SYSTEM_ASSET_ATTRIBUTE_NAMES = new Set(['asset id', 'asset type', 'status', 'condition']);
+const getAvailabilityStatusLabel = (row) => {
+  const rawValue = row.availability_status
+    || row.asset_detail?.availability_status
+    || row.asset_detail?.attribute_values_with_names?.['Availability Status']
+    || row.asset_detail?.attribute_values?.['Availability Status']
+    || row.asset_detail?.attribute_values?.availability_status
+    || row.asset_detail?.attribute_values?.['10']
+    || '';
+
+  const normalized = String(rawValue || '').trim().toLowerCase();
+  if (normalized === 'in stock') return 'In Stock';
+  if (normalized === 'issued') return 'Issued';
+  if (normalized === 'under repair') return 'Under Repair';
+  if (normalized === 'retired') return 'Retired';
+  if (normalized === 'reserved stock') return 'Reserved Stock';
+  return 'Reserved Stock';
+};
 
 const EMPTY_ASSET = {
   organisation: '',
@@ -66,6 +82,13 @@ const EMPTY_LICENSE = {
   expiry_date: '',
   license_type: '',
   notes: '',
+};
+
+const getOrganisationLogoUrl = (logo) => {
+  if (!logo) return '';
+  if (/^https?:\/\//i.test(logo)) return logo;
+  const apiHost = process.env.REACT_APP_API_HOST || window.location.hostname || 'localhost';
+  return `http://${apiHost}:8000${logo.startsWith('/') ? logo : `/${logo}`}`;
 };
 
 function TabPanel({ value, index, children }) {
@@ -104,6 +127,7 @@ function Assets() {
   const [organisations, setOrganisations] = useState([]);
   const [locations, setLocations] = useState([]);
   const [assetAttributes, setAssetAttributes] = useState([]);
+  const [attributeRequirements, setAttributeRequirements] = useState([]);
   const [licenseTypeChoices, setLicenseTypeChoices] = useState([]);
   const [hardwareAssetTypeFilter] = useState([]);
   const [softwareAssetTypeFilter, setSoftwareAssetTypeFilter] = useState([]);
@@ -152,6 +176,14 @@ function Assets() {
     [organisations, selectedOrganisationId]
   );
 
+  const organisationById = useMemo(() => {
+    const map = new Map();
+    organisations.forEach((org) => {
+      map.set(String(org.id), org);
+    });
+    return map;
+  }, [organisations]);
+
   const locationOptions = useMemo(() => {
     if (!assetForm.organisation) return locations;
     return locations.filter((location) => String(location.organisation) === String(assetForm.organisation));
@@ -168,7 +200,7 @@ function Assets() {
     } catch {
       showSnack('Failed to load form options.', 'error');
     }
-  }, [selectedOrganisationId]);
+  }, []);
 
   const fetchAssetAttributes = useCallback(async () => {
     try {
@@ -177,7 +209,16 @@ function Assets() {
     } catch {
       showSnack('Failed to load asset attributes.', 'error');
     }
-  }, [selectedOrganisationId]);
+  }, []);
+
+  const fetchAttributeRequirements = useCallback(async () => {
+    try {
+      const res = await api.get('/inventory/asset-type-requirements/');
+      setAttributeRequirements(Array.isArray(res.data) ? res.data : res.data.results || []);
+    } catch {
+      showSnack('Failed to load inventory field rules.', 'error');
+    }
+  }, []);
 
   const fetchLocations = useCallback(async (organisationId) => {
     if (!organisationId) {
@@ -206,7 +247,7 @@ function Assets() {
     } finally {
       setAssetLoading(false);
     }
-  }, []);
+  }, [selectedOrganisationId]);
 
   const fetchLicenses = useCallback(async () => {
     setLicenseLoading(true);
@@ -221,14 +262,15 @@ function Assets() {
     } finally {
       setLicenseLoading(false);
     }
-  }, []);
+  }, [selectedOrganisationId]);
 
   useEffect(() => {
     fetchChoices();
     fetchAssetAttributes();
+    fetchAttributeRequirements();
     fetchAssets();
     fetchLicenses();
-  }, [fetchChoices, fetchAssetAttributes, fetchAssets, fetchLicenses]);
+  }, [fetchChoices, fetchAssetAttributes, fetchAttributeRequirements, fetchAssets, fetchLicenses]);
 
   useEffect(() => {
     (async () => {
@@ -268,6 +310,19 @@ function Assets() {
       );
     });
   }, [assetAttributes, selectedAssetType]);
+
+  const selectedAssetTypeRequirements = useMemo(() => {
+    if (!selectedAssetType) return [];
+    return attributeRequirements.filter((req) => String(req.asset_type) === String(selectedAssetType.id));
+  }, [attributeRequirements, selectedAssetType]);
+
+  const requirementByAttributeId = useMemo(() => {
+    const map = new Map();
+    selectedAssetTypeRequirements.forEach((req) => {
+      map.set(String(req.attribute), req);
+    });
+    return map;
+  }, [selectedAssetTypeRequirements]);
 
   const getAttributeKey = (attr) => String(attr.id);
 
@@ -371,6 +426,18 @@ function Assets() {
     );
   };
 
+  const validateAssetForm = () => {
+    const missing = [];
+    selectedAssetTypeRequirements.forEach((req) => {
+      if (req.requirement !== 'mandatory') return;
+      const value = getAttributeValue({ id: req.attribute, name: req.attribute_name });
+      if (value === '' || value === null || value === undefined) {
+        missing.push(req.attribute_name);
+      }
+    });
+    return missing;
+  };
+
   // Asset handlers
   const openAddAsset = () => {
     setEditAsset(null);
@@ -414,6 +481,11 @@ function Assets() {
   }, []);
 
   const handleSaveAsset = async () => {
+    const missingFields = validateAssetForm();
+    if (missingFields.length) {
+      showSnack(`Missing mandatory fields: ${missingFields.join(', ')}`, 'error');
+      return;
+    }
     setSavingAsset(true);
     try {
       const payload = buildAssetPayload();
@@ -564,8 +636,40 @@ function Assets() {
     {
       field: 'organisation_detail',
       headerName: 'Organisation',
-      width: 170,
-      valueGetter: (_, row) => row.organisation_detail?.name || row.organisation?.name || '--',
+      width: 220,
+      sortable: false,
+      renderCell: ({ row }) => {
+        const org = row.organisation_detail || organisationById.get(String(row.organisation?.id || row.organisation)) || null;
+        const logoUrl = getOrganisationLogoUrl(org?.logo);
+        if (!logoUrl) return org?.name || '--';
+        return (
+          <Box
+            sx={{
+              width: '100%',
+              minWidth: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'flex-start',
+            }}
+          >
+            <Box
+              component="img"
+              src={logoUrl}
+              alt={org?.name || 'Organisation logo'}
+              title={org?.name || 'Organisation'}
+              sx={{
+                display: 'block',
+                width: '100%',
+                maxWidth: 168,
+                height: 32,
+                objectFit: 'contain',
+                objectPosition: 'left center',
+                flexShrink: 0,
+              }}
+            />
+          </Box>
+        );
+      },
     },
     {
       field: 'location_detail',
@@ -575,15 +679,14 @@ function Assets() {
     },
     { field: 'asset_type_name', headerName: 'Type', width: 120 },
     {
-      field: 'status',
-      headerName: 'Status',
-      width: 130,
+      field: 'availability_status',
+      headerName: 'Availability Status',
+      width: 160,
       renderCell: ({ value }) => (
         <Chip
-          label={value || ''}
-          color={ASSET_STATUS_COLORS[value] || 'default'}
+          label={value || 'Reserved Stock'}
+          color={AVAILABILITY_STATUS_COLORS[value] || 'default'}
           size="small"
-          sx={{ textTransform: 'capitalize' }}
         />
       ),
     },
@@ -607,15 +710,38 @@ function Assets() {
         </Box>
       ),
     },
-  ], [openEditAsset]);
+  ], [openEditAsset, organisationById]);
 
   const licenseColumns = [
     { field: 'software_name', headerName: 'Software Name', flex: 1, minWidth: 150 },
     {
       field: 'organisation_detail',
       headerName: 'Organisation',
-      width: 170,
-      valueGetter: (_, row) => row.organisation_detail?.name || row.organisation?.name || '--',
+      width: 220,
+      sortable: false,
+      renderCell: ({ row }) => {
+        const org = row.organisation_detail || organisationById.get(String(row.organisation?.id || row.organisation)) || null;
+        const logoUrl = getOrganisationLogoUrl(org?.logo);
+        if (!logoUrl) return org?.name || '--';
+        return (
+          <Box sx={{ width: '100%', minWidth: 0, display: 'flex', alignItems: 'center' }}>
+            <Box
+              component="img"
+              src={logoUrl}
+              alt={org?.name || 'Organisation logo'}
+              title={org?.name || 'Organisation'}
+              sx={{
+                display: 'block',
+                width: '100%',
+                maxWidth: 168,
+                height: 32,
+                objectFit: 'contain',
+                objectPosition: 'left center',
+              }}
+            />
+          </Box>
+        );
+      },
     },
     {
       field: 'license_key',
@@ -728,6 +854,7 @@ function Assets() {
                     return filteredAssets.map((row) => {
                       const values = row.asset_detail?.attribute_values_with_names || row.asset_detail?.attribute_values || row.attribute_values || {};
                       const mapped = { ...row };
+                      mapped.availability_status = getAvailabilityStatusLabel(row);
                       relevantAttrs.forEach((attr) => {
                         const key = `attr_${attr.id}`;
                         mapped[key] = values[String(attr.id)] ?? values[attr.name] ?? values[attr.name.toLowerCase()] ?? '';
@@ -935,11 +1062,13 @@ function Assets() {
                 </Typography>
               </Grid>
             )}
-            {configuredAssetAttributes.map((attr) => (
-              <Grid item xs={12} sm={attr.field_type === 'boolean' ? 12 : 6} key={attr.id}>
-                {renderAttributeField(attr)}
-              </Grid>
-            ))}
+            {configuredAssetAttributes
+              .filter((attr) => requirementByAttributeId.get(String(attr.id))?.requirement !== 'hidden')
+              .map((attr) => (
+                <Grid item xs={12} sm={attr.field_type === 'boolean' ? 12 : 6} key={attr.id}>
+                  {renderAttributeField(attr)}
+                </Grid>
+              ))}
             <Grid item xs={12} sm={6}>
               <TextField
                 select

@@ -38,6 +38,29 @@ class AssetAttribute(models.Model):
         return self.name
 
 
+class AssetTypeAttributeRequirement(models.Model):
+    REQUIREMENT_CHOICES = [
+        ('mandatory', 'Mandatory'),
+        ('optional', 'Optional'),
+        ('hidden', 'Hidden'),
+    ]
+
+    asset_type = models.ForeignKey(AssetType, on_delete=models.CASCADE, related_name='attribute_requirements')
+    attribute = models.ForeignKey(AssetAttribute, on_delete=models.CASCADE, related_name='type_requirements')
+    requirement = models.CharField(max_length=20, choices=REQUIREMENT_CHOICES, default='optional')
+    notes = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'asset_type_attribute_requirements'
+        unique_together = ('asset_type', 'attribute')
+        ordering = ['asset_type__name', 'attribute__name']
+
+    def __str__(self):
+        return f'{self.asset_type.name} - {self.attribute.name}: {self.requirement}'
+
+
 class Asset(models.Model):
     STATUS_CHOICES = [
         ('available', 'Available'),

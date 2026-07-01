@@ -9,6 +9,11 @@ import {
   Grid,
   Paper,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
   Typography,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
@@ -26,6 +31,37 @@ const STATUS_COLORS = {
   maintenance: 'warning',
   retired: 'default',
 };
+
+const ATTRIBUTE_LABELS = {
+  2: 'Brand',
+  3: 'RAM',
+  4: 'Device ID',
+  5: 'Product ID',
+  6: 'Screen Size',
+  7: 'Model',
+  8: 'Processor',
+  9: 'Condition',
+  10: 'Availability Status',
+  brand: 'Brand',
+  ram: 'RAM',
+  device_id: 'Device ID',
+  product_id: 'Product ID',
+  screen_size: 'Screen Size',
+  model: 'Model',
+  processor: 'Processor',
+  condition: 'Condition',
+  availability_status: 'Availability Status',
+  'availability status': 'Availability Status',
+};
+
+const SYSTEM_ATTRIBUTE_KEYS = new Set([
+  'asset id',
+  'asset type',
+  'status',
+  'condition',
+  'availability status',
+  'availability_status',
+]);
 
 function DetailTile({ icon, label, value }) {
   return (
@@ -95,11 +131,32 @@ function AssetDeviceDashboard() {
     [report]
   );
 
+  const allocationHistoryRows = useMemo(
+    () => (report?.allocation_history || []).map((allocation, index) => ({
+      id: allocation.id || `${allocation.asset || assetId}-${index}`,
+      ...allocation,
+    })),
+    [report, assetId]
+  );
+
   const attributeRows = useMemo(() => {
     const attrs = report?.asset?.attribute_values_with_names || report?.asset?.attribute_values || {};
-    return Object.entries(attrs)
-      .filter(([key, value]) => value !== '' && value !== null && value !== undefined && typeof value !== 'object')
-      .map(([key, value]) => ({ id: key, field: key, value }));
+    const rows = [];
+    const seenFields = new Set();
+
+    Object.entries(attrs).forEach(([key, value]) => {
+      if (value === '' || value === null || value === undefined || typeof value === 'object') return;
+      if (SYSTEM_ATTRIBUTE_KEYS.has(String(key).trim().toLowerCase())) return;
+
+      const field = ATTRIBUTE_LABELS[key] || ATTRIBUTE_LABELS[String(key).trim().toLowerCase()] || key;
+      const normalizedField = String(field).trim().toLowerCase();
+      if (seenFields.has(normalizedField)) return;
+
+      seenFields.add(normalizedField);
+      rows.push({ id: normalizedField, field, value });
+    });
+
+    return rows;
   }, [report]);
 
   const appColumns = [
@@ -266,6 +323,51 @@ function AssetDeviceDashboard() {
           Device Attributes
         </Typography>
         <DataTable rows={attributeRows} columns={attributeColumns} pageSize={10} onRefresh={fetchReport} refreshLabel="Refresh" />
+      </Paper>
+
+      <Paper sx={{ p: 2, borderRadius: 2 }}>
+        <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 2 }}>
+          Asset Allocation History
+        </Typography>
+        {allocationHistoryRows.length === 0 ? (
+          <Alert severity="info">No allocation history found for this asset.</Alert>
+        ) : (
+          <Box sx={{ width: '100%', overflowX: 'auto' }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Assigned To</TableCell>
+                  <TableCell>Assigned By</TableCell>
+                  <TableCell>Assigned Date</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Recovered By</TableCell>
+                  <TableCell>Recovered Date</TableCell>
+                  <TableCell>Notes</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {allocationHistoryRows.map((row) => (
+                  <TableRow key={row.id} hover>
+                    <TableCell>{row.employee_detail?.full_name || row.employee_detail?.employee_id || '--'}</TableCell>
+                    <TableCell>{row.assigned_by_name || '--'}</TableCell>
+                    <TableCell>{row.assigned_date || '--'}</TableCell>
+                    <TableCell>
+                      <Chip
+                        label={(row.status || '').replace(/_/g, ' ') || '--'}
+                        color={row.status === 'active' ? 'primary' : 'default'}
+                        size="small"
+                        sx={{ textTransform: 'capitalize' }}
+                      />
+                    </TableCell>
+                    <TableCell>{row.recovered_by_name || '--'}</TableCell>
+                    <TableCell>{row.recovered_date || '--'}</TableCell>
+                    <TableCell>{row.notes || '--'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
+        )}
       </Paper>
     </Stack>
   );

@@ -48,6 +48,7 @@ const FIELD_TYPE_CHOICES = [
 
 const EMPTY_TYPE = { name: '', asset_type: '', description: '' };
 const EMPTY_ATTR = { name: '', field_type: '', options: [], asset_types: [], is_common: false };
+const EMPTY_REQ = { asset_type: '', attribute: '', requirement: 'optional', notes: '' };
 
 function TabPanel({ value, index, children }) {
   return value === index ? <Box sx={{ pt: 2 }}>{children}</Box> : null;
@@ -74,6 +75,15 @@ function InventoryConfig() {
   const [savingAttr, setSavingAttr] = useState(false);
   const [confirmAttr, setConfirmAttr] = useState({ open: false, row: null });
   const [optionsInput, setOptionsInput] = useState('');
+
+  // Asset Type Attribute Requirements
+  const [requirements, setRequirements] = useState([]);
+  const [reqLoading, setReqLoading] = useState(false);
+  const [reqDialog, setReqDialog] = useState(false);
+  const [editReq, setEditReq] = useState(null);
+  const [reqForm, setReqForm] = useState(EMPTY_REQ);
+  const [savingReq, setSavingReq] = useState(false);
+  const [confirmReq, setConfirmReq] = useState({ open: false, row: null });
 
   const [snack, setSnack] = useState({ open: false, msg: '', severity: 'success' });
   const showSnack = (msg, severity = 'success') => setSnack({ open: true, msg, severity });
@@ -104,10 +114,24 @@ function InventoryConfig() {
     }
   }, []);
 
+  const fetchRequirements = useCallback(async () => {
+    setReqLoading(true);
+    try {
+      const res = await api.get('/inventory/asset-type-requirements/');
+      const data = Array.isArray(res.data) ? res.data : res.data.results || [];
+      setRequirements(data.map((r) => ({ ...r, id: r.id })));
+    } catch {
+      showSnack('Failed to load inventory requirements.', 'error');
+    } finally {
+      setReqLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchAssetTypes();
     fetchAttributes();
-  }, [fetchAssetTypes, fetchAttributes]);
+    fetchRequirements();
+  }, [fetchAssetTypes, fetchAttributes, fetchRequirements]);
 
   // ── Asset Type handlers ──────────────────────────────────────────────────
 
@@ -210,6 +234,17 @@ function InventoryConfig() {
     }
   };
 
+  const getErrorMessage = (err) => {
+    const data = err.response?.data;
+    if (!data) return 'Save failed.';
+    if (typeof data === 'string') return data;
+    if (data.detail) return data.detail;
+    const firstField = Object.keys(data)[0];
+    const firstValue = data[firstField];
+    const message = Array.isArray(firstValue) ? firstValue.join(' ') : JSON.stringify(firstValue);
+    return firstField ? `${firstField}: ${message}` : 'Save failed.';
+  };
+
   const handleDeleteAttr = async () => {
     try {
       await api.delete(`/inventory/asset-attributes/${confirmAttr.row.id}/`);
@@ -219,6 +254,63 @@ function InventoryConfig() {
       showSnack('Delete failed.', 'error');
     } finally {
       setConfirmAttr({ open: false, row: null });
+    }
+  };
+
+  const openAddReq = () => {
+    setEditReq(null);
+    setReqForm(EMPTY_REQ);
+    setReqDialog(true);
+  };
+
+  const openEditReq = (row) => {
+    setEditReq(row);
+    setReqForm({
+      asset_type: String(row.asset_type || ''),
+      attribute: String(row.attribute || ''),
+      requirement: row.requirement || 'optional',
+      notes: row.notes || '',
+    });
+    setReqDialog(true);
+  };
+
+  const handleSaveReq = async () => {
+    if (!reqForm.asset_type || !reqForm.attribute) {
+      showSnack('Asset type and attribute are required.', 'error');
+      return;
+    }
+    setSavingReq(true);
+    try {
+      const payload = {
+        ...reqForm,
+        asset_type: Number(reqForm.asset_type),
+        attribute: Number(reqForm.attribute),
+      };
+      if (editReq) {
+        await api.patch(`/inventory/asset-type-requirements/${editReq.id}/`, payload);
+        showSnack('Requirement updated.');
+      } else {
+        await api.post('/inventory/asset-type-requirements/', payload);
+        showSnack('Requirement created.');
+      }
+      setReqDialog(false);
+      fetchRequirements();
+    } catch (err) {
+      showSnack(getErrorMessage(err), 'error');
+    } finally {
+      setSavingReq(false);
+    }
+  };
+
+  const handleDeleteReq = async () => {
+    try {
+      await api.delete(`/inventory/asset-type-requirements/${confirmReq.row.id}/`);
+      showSnack('Requirement deleted.');
+      fetchRequirements();
+    } catch {
+      showSnack('Delete failed.', 'error');
+    } finally {
+      setConfirmReq({ open: false, row: null });
     }
   };
 
@@ -346,6 +438,7 @@ function InventoryConfig() {
         >
           <Tab label="Asset Types" />
           <Tab label="Asset Attributes" />
+          <Tab label="Field Rules" />
         </Tabs>
         <Box sx={{ p: 2 }}>
           <TabPanel value={tab} index={0}>
@@ -368,6 +461,48 @@ function InventoryConfig() {
               onRefresh={fetchAttributes}
               onAdd={openAddAttr}
               addLabel="Add Attribute"
+              refreshLabel="Refresh"
+              searchable
+            />
+          </TabPanel>
+          <TabPanel value={tab} index={2}>
+            <DataTable
+              rows={requirements}
+              columns={[
+                { field: 'asset_type_name', headerName: 'Asset Type', flex: 1, minWidth: 160 },
+                { field: 'attribute_name', headerName: 'Attribute', flex: 1, minWidth: 160 },
+                {
+                  field: 'requirement',
+                  headerName: 'Requirement',
+                  width: 140,
+                  renderCell: ({ value }) => <Chip label={value} size="small" color={value === 'mandatory' ? 'error' : value === 'hidden' ? 'default' : 'primary'} />,
+                },
+                { field: 'notes', headerName: 'Notes', flex: 1.5, minWidth: 180 },
+                {
+                  field: 'actions',
+                  headerName: 'Actions',
+                  width: 100,
+                  sortable: false,
+                  renderCell: ({ row }) => (
+                    <Box>
+                      <Tooltip title="Edit">
+                        <IconButton size="small" onClick={() => openEditReq(row)}>
+                          <EditIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                      <Tooltip title="Delete">
+                        <IconButton size="small" color="error" onClick={() => setConfirmReq({ open: true, row })}>
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    </Box>
+                  ),
+                },
+              ]}
+              loading={reqLoading}
+              onRefresh={fetchRequirements}
+              onAdd={openAddReq}
+              addLabel="Add Field Rule"
               refreshLabel="Refresh"
               searchable
             />
@@ -545,6 +680,74 @@ function InventoryConfig() {
         message={`Delete attribute "${confirmAttr.row?.name}"?`}
         onConfirm={handleDeleteAttr}
         onCancel={() => setConfirmAttr({ open: false, row: null })}
+        confirmLabel="Delete"
+      />
+
+      <Dialog open={reqDialog} onClose={() => setReqDialog(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ pb: 1 }}>{editReq ? 'Edit Field Rule' : 'Add Field Rule'}</DialogTitle>
+        <Divider />
+        <DialogContent sx={{ pt: 2.5 }}>
+          <Stack spacing={2.5}>
+            <TextField
+              select
+              label="Asset Type"
+              fullWidth
+              value={reqForm.asset_type}
+              onChange={(e) => setReqForm({ ...reqForm, asset_type: e.target.value })}
+            >
+              {assetTypes.map((t) => (
+                <MenuItem key={t.id} value={String(t.id)}>
+                  {t.name}
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField
+              select
+              label="Attribute"
+              fullWidth
+              value={reqForm.attribute}
+              onChange={(e) => setReqForm({ ...reqForm, attribute: e.target.value })}
+            >
+              {attributes.map((a) => (
+                <MenuItem key={a.id} value={String(a.id)}>
+                  {a.name}
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField
+              select
+              label="Requirement"
+              fullWidth
+              value={reqForm.requirement}
+              onChange={(e) => setReqForm({ ...reqForm, requirement: e.target.value })}
+            >
+              <MenuItem value="mandatory">Mandatory</MenuItem>
+              <MenuItem value="optional">Optional</MenuItem>
+              <MenuItem value="hidden">Hidden</MenuItem>
+            </TextField>
+            <TextField
+              label="Notes"
+              fullWidth
+              value={reqForm.notes}
+              onChange={(e) => setReqForm({ ...reqForm, notes: e.target.value })}
+              placeholder="Optional guidance for admins"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setReqDialog(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleSaveReq} disabled={savingReq}>
+            {savingReq ? 'Saving...' : 'Save'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <ConfirmDialog
+        open={confirmReq.open}
+        title="Delete Field Rule"
+        message={`Delete field rule for "${confirmReq.row?.attribute_name}" on "${confirmReq.row?.asset_type_name}"?`}
+        onConfirm={handleDeleteReq}
+        onCancel={() => setConfirmReq({ open: false, row: null })}
         confirmLabel="Delete"
       />
 

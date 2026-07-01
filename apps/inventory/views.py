@@ -20,6 +20,7 @@ from .models import (
     Asset,
     AssetAttribute,
     AssetType,
+    AssetTypeAttributeRequirement,
     InstalledApplication,
     InstalledAppReportImport,
     SoftwareLicense,
@@ -29,6 +30,7 @@ from .serializers import (
     AssetCreateSerializer,
     AssetSerializer,
     AssetTypeSerializer,
+    AssetTypeAttributeRequirementSerializer,
     SoftwareLicenseSerializer,
 )
 
@@ -714,6 +716,17 @@ class AssetAttributeViewSet(viewsets.ModelViewSet):
         return [IsAuthenticated()]
 
 
+class AssetTypeAttributeRequirementViewSet(viewsets.ModelViewSet):
+    queryset = AssetTypeAttributeRequirement.objects.select_related('asset_type', 'attribute').all()
+    serializer_class = AssetTypeAttributeRequirementSerializer
+    pagination_class = None
+
+    def get_permissions(self):
+        if self.action in ('create', 'update', 'partial_update', 'destroy'):
+            return [IsITSpecialistOrSuperAdmin()]
+        return [IsAuthenticated()]
+
+
 class AssetViewSet(viewsets.ModelViewSet):
     """
     CRUD for assets.
@@ -1032,7 +1045,13 @@ class AssetViewSet(viewsets.ModelViewSet):
                 mdm_error = ''
 
         from apps.allocation.models import AssetAllocation
+        from apps.allocation.serializers import AssetAllocationSerializer
         active_allocation = AssetAllocation.objects.filter(asset=asset, status='active').select_related('employee').first()
+        allocation_history = AssetAllocation.objects.filter(asset=asset).select_related(
+            'employee',
+            'assigned_by',
+            'recovered_by',
+        ).order_by('-assigned_date', '-created_at')
         assigned_user_name = active_allocation.employee.full_name if active_allocation else None
 
         return Response(
@@ -1054,6 +1073,9 @@ class AssetViewSet(viewsets.ModelViewSet):
                     'mdm_matched': bool(matched_device or device_id),
                     'assigned_user_name': assigned_user_name,
                 },
+                'allocation_history': AssetAllocationSerializer(
+                    allocation_history, many=True, context={'request': request}
+                ).data,
                 'installed_apps': installed_apps,
                 'installed_apps_source': installed_apps_source,
                 'installed_apps_error': mdm_error,

@@ -1,5 +1,8 @@
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_date
+from datetime import timedelta
+import re
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -142,6 +145,21 @@ GROUP_DEVICE_IDS = (
     'Android',
 )
 
+ACTIVE_DURATION_KEYS = (
+    'ActiveTime',
+    'ActiveDuration',
+    'UsageTime',
+    'UsageDuration',
+    'OnlineDuration',
+    'SessionDuration',
+    'TimeSpent',
+    'ScreenOnTime',
+    'ScreenActiveTime',
+    'TotalActiveTime',
+    'TotalUsageTime',
+    'Uptime',
+)
+
 
 def get_connection():
     return SureMDMConnection.objects.order_by('-updated_at').first()
@@ -241,6 +259,156 @@ def device_value(device, *keys, default=''):
         return value
 
     return default
+
+
+def parse_duration_to_minutes(value):
+    if value in (None, ''):
+        return None
+    if isinstance(value, (int, float)):
+        if value < 0:
+            return None
+        return float(value) / 60 if value > 240 else float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if lowered in {'n/a', 'na', 'none', 'null'}:
+        return None
+
+    total_minutes = 0.0
+    matched = False
+    for chunk in lowered.replace(',', ' ').split():
+        try:
+            if chunk.endswith('ms'):
+                total_minutes += float(chunk[:-2]) / 60000
+                matched = True
+            elif chunk.endswith('s'):
+                total_minutes += float(chunk[:-1]) / 60
+                matched = True
+            elif chunk.endswith('m'):
+                total_minutes += float(chunk[:-1])
+                matched = True
+            elif chunk.endswith('h'):
+                total_minutes += float(chunk[:-1]) * 60
+                matched = True
+            elif chunk.endswith('d'):
+                total_minutes += float(chunk[:-1]) * 1440
+                matched = True
+            elif ':' in chunk:
+                parts = [float(part) for part in chunk.split(':')]
+                if len(parts) == 2:
+                    total_minutes += parts[0] * 60 + parts[1]
+                    matched = True
+                elif len(parts) == 3:
+                    total_minutes += parts[0] * 60 + parts[1] + parts[2] / 60
+                    matched = True
+            else:
+                try:
+                    total_minutes += float(chunk)
+                    matched = True
+                except ValueError:
+                    continue
+        except ValueError:
+            continue
+
+    if matched:
+        return total_minutes
+
+    match = re.fullmatch(r'(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?', lowered)
+    if match and any(match.groups()):
+        days, hours, minutes, seconds = [int(part or 0) for part in match.groups()]
+        return days * 1440 + hours * 60 + minutes + seconds / 60
+
+    return None
+
+
+def extract_active_minutes(device):
+    raw_candidates = []
+    if isinstance(device, dict):
+        for key in ACTIVE_DURATION_KEYS:
+            raw_candidates.append(device.get(key))
+        raw = device.get('raw')
+        if isinstance(raw, dict):
+            for key in ACTIVE_DURATION_KEYS:
+                raw_candidates.append(raw.get(key))
+        flattened = flatten_device(device)
+        for key in ACTIVE_DURATION_KEYS:
+            for candidate_key, candidate_value in flattened.items():
+                if str(candidate_key).lower().replace(' ', '').replace('_', '') == str(key).lower().replace(' ', '').replace('_', ''):
+                    raw_candidates.append(candidate_value)
+    for candidate in raw_candidates:
+        minutes = parse_duration_to_minutes(candidate)
+        if minutes is not None:
+            return minutes, candidate
+    return 0.0, ''
+
+
+def build_date_range(start_date, end_date):
+    current = start_date
+    while current <= end_date:
+        yield current
+        current += timedelta(days=1)
+
+
+def _normalize_lookup(value):
+    return str(value or '').strip().lower()
+
+
+def is_laptop_asset(asset):
+    asset_type_name = _normalize_lookup(getattr(asset.asset_type, 'name', ''))
+    asset_type_kind = _normalize_lookup(getattr(asset.asset_type, 'asset_type', ''))
+    return (
+        'laptop' in asset_type_name
+        or 'notebook' in asset_type_name
+        or 'laptop' in asset_type_kind
+        or 'notebook' in asset_type_kind
+    )
+
+
+def find_suremdm_asset_for_employee_asset(employee_asset):
+    if not employee_asset:
+        return None
+
+    candidate_values = {
+        employee_asset.asset_id,
+        employee_asset.serial_number,
+    }
+    attribute_values = employee_asset.attribute_values if isinstance(employee_asset.attribute_values, dict) else {}
+    candidate_values.update(
+        {
+            attribute_values.get('suremdm_device_id'),
+            attribute_values.get('DeviceID'),
+            attribute_values.get('MDM Device ID'),
+            attribute_values.get('device_name'),
+            attribute_values.get('DeviceName'),
+        }
+    )
+    candidate_values = {_normalize_lookup(value) for value in candidate_values if value}
+
+    suremdm_assets = Asset.objects.select_related('asset_type').filter(
+        models.Q(vendor__iexact='SureMDM') | models.Q(asset_id__istartswith='SUREMDM-')
+    )
+
+    for mdm_asset in suremdm_assets:
+        mdm_values = {
+            _normalize_lookup(mdm_asset.asset_id),
+            _normalize_lookup(mdm_asset.serial_number),
+        }
+        mdm_attrs = mdm_asset.attribute_values if isinstance(mdm_asset.attribute_values, dict) else {}
+        mdm_values.update(
+            {
+                _normalize_lookup(mdm_attrs.get('suremdm_device_id')),
+                _normalize_lookup(mdm_attrs.get('DeviceID')),
+                _normalize_lookup(mdm_attrs.get('MDM Device ID')),
+                _normalize_lookup(mdm_attrs.get('device_name')),
+                _normalize_lookup(mdm_attrs.get('DeviceName')),
+            }
+        )
+        if candidate_values.intersection(mdm_values):
+            return mdm_asset
+
+    return None
 
 
 def split_platform_model(value):
@@ -494,6 +662,165 @@ class SureMDMViewSet(ViewSet):
                     {'category': name, 'count': count}
                     for name, count in sorted(categories.items())
                 ],
+            }
+        )
+
+    @action(detail=False, methods=['get'], url_path='active-time')
+    def active_time(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+
+        start_date = parse_date(request.query_params.get('start_date') or '') or timezone.localdate()
+        end_date = parse_date(request.query_params.get('end_date') or '') or start_date
+        if end_date < start_date:
+            return Response({'detail': 'end_date must be on or after start_date.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        employee_id = request.query_params.get('employee_id')
+        asset_id = request.query_params.get('asset_id')
+
+        limit = int(request.query_params.get('limit', 500))
+        try:
+            devices = normalize_devices_with_groups(get_client(connection), limit=limit)
+        except SureMDMError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+
+        selected_device_ids = set()
+        selected_employee = None
+        selected_asset = None
+        resolved_mdm_asset = None
+        if employee_id:
+            from apps.employees.models import Employee
+
+            employee = Employee.objects.prefetch_related('asset_allocations__asset').filter(pk=employee_id).first()
+            if employee:
+                selected_employee = {
+                    'id': employee.id,
+                    'employee_id': employee.employee_id,
+                    'full_name': employee.full_name,
+                }
+                active_allocations = [allocation for allocation in employee.asset_allocations.all() if allocation.status == 'active']
+                active_allocation = next(
+                    (
+                        allocation
+                        for allocation in active_allocations
+                        if allocation.asset and is_laptop_asset(allocation.asset)
+                    ),
+                    None,
+                ) or (active_allocations[0] if active_allocations else None)
+                if active_allocation and active_allocation.asset:
+                    asset = active_allocation.asset
+                    resolved_mdm_asset = find_suremdm_asset_for_employee_asset(asset)
+                    selected_asset = {
+                        'id': asset.id,
+                        'asset_id': asset.asset_id,
+                        'asset_type': asset.asset_type.name if asset.asset_type_id else '',
+                        'serial_number': asset.serial_number,
+                    }
+                    if resolved_mdm_asset:
+                        selected_asset = {
+                            'id': resolved_mdm_asset.id,
+                            'asset_id': resolved_mdm_asset.asset_id,
+                            'asset_type': resolved_mdm_asset.asset_type.name if resolved_mdm_asset.asset_type_id else '',
+                            'serial_number': resolved_mdm_asset.serial_number,
+                        }
+                    selected_device_ids.update(
+                        filter(
+                            None,
+                            {
+                                resolved_mdm_asset.asset_id if resolved_mdm_asset else '',
+                                resolved_mdm_asset.serial_number if resolved_mdm_asset else '',
+                                resolved_mdm_asset.attribute_values.get('suremdm_device_id')
+                                if resolved_mdm_asset and isinstance(resolved_mdm_asset.attribute_values, dict)
+                                else '',
+                                resolved_mdm_asset.attribute_values.get('device_name')
+                                if resolved_mdm_asset and isinstance(resolved_mdm_asset.attribute_values, dict)
+                                else '',
+                                asset.asset_id,
+                                asset.serial_number,
+                                active_allocation.asset.attribute_values.get('suremdm_device_id')
+                                if isinstance(active_allocation.asset.attribute_values, dict)
+                                else '',
+                                active_allocation.asset.attribute_values.get('device_name')
+                                if isinstance(active_allocation.asset.attribute_values, dict)
+                                else '',
+                            },
+                        )
+                    )
+
+        if asset_id:
+            selected_device_ids.add(asset_id)
+
+        if selected_device_ids:
+            devices = [
+                device for device in devices
+                if str(device.get('suremdm_device_id')) in {str(value) for value in selected_device_ids}
+                or str(device.get('serial_number')) in {str(value) for value in selected_device_ids}
+                or str(device.get('name')) in {str(value) for value in selected_device_ids}
+            ]
+
+        if selected_employee and not selected_asset:
+            devices = []
+
+        results = []
+        total_minutes = 0.0
+        for day in build_date_range(start_date, end_date):
+            for device in devices[:1]:
+                minutes, source_value = extract_active_minutes(device)
+                total_minutes += minutes
+                active_from = f'{day.isoformat()}T09:00:00'
+                active_to = device['last_seen'] or f'{day.isoformat()}T18:00:00'
+                results.append(
+                    {
+                        'date': day.isoformat(),
+                        'device_id': device['suremdm_device_id'],
+                        'suremdm_device_id': device['suremdm_device_id'],
+                        'asset_id': selected_asset['asset_id'] if selected_asset else '',
+                        'name': device['name'],
+                        'serial_number': device['serial_number'],
+                        'platform': device['platform'],
+                        'model': device['model'],
+                        'category': device['category'],
+                        'active_from': active_from,
+                        'logged_off_at': active_to,
+                        'active_minutes': round(minutes, 2),
+                        'active_hours': round(minutes / 60, 2),
+                        'activity_source': 'api_field' if source_value else 'last_seen_only',
+                        'raw_activity_value': source_value,
+                    }
+                )
+
+        if not results and selected_employee and selected_asset:
+            results.append(
+                {
+                    'date': start_date.isoformat(),
+                    'device_id': selected_asset['asset_id'],
+                    'suremdm_device_id': selected_asset['asset_id'],
+                    'asset_id': selected_asset['asset_id'],
+                    'name': selected_asset['asset_id'],
+                    'serial_number': selected_asset.get('serial_number', ''),
+                    'platform': '',
+                    'model': '',
+                    'category': 'Uncategorized',
+                    'active_from': '',
+                    'logged_off_at': '',
+                    'active_minutes': 0.0,
+                    'active_hours': 0.0,
+                    'activity_source': 'asset_lookup_only',
+                    'raw_activity_value': '',
+                }
+            )
+
+        return Response(
+            {
+                'start_date': start_date.isoformat(),
+                'end_date': end_date.isoformat(),
+                'total_devices': len(results),
+                'total_active_minutes': round(total_minutes, 2),
+                'selected_employee': selected_employee,
+                'selected_asset': selected_asset,
+                'results': results,
             }
         )
 

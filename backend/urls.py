@@ -14,4 +14,5 @@ urlpatterns = [
     path('api/allocation/', include('apps.allocation.urls')),
     path('api/tickets/', include('apps.tickets.urls')),
     path('api/integrations/', include('apps.integrations.urls')),
+    path('api/activity-log/', include('apps.activity_log.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

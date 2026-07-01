@@ -107,7 +107,34 @@ function OrgChip({ org, onClick }) {
       onClick={onClick}
       avatar={
         logoUrl ? (
-          <Avatar src={logoUrl} alt={org.name} sx={{ width: 30, height: 30 }} />
+          <Box
+            component="span"
+            sx={{
+              width: 42,
+              height: 26,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              bgcolor: 'transparent',
+              borderRadius: 0,
+              overflow: 'visible',
+              flexShrink: 0,
+              ml: 0.25,
+            }}
+          >
+            <Box
+              component="img"
+              src={logoUrl}
+              alt={org.name}
+              sx={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                objectPosition: 'center',
+                display: 'block',
+              }}
+            />
+          </Box>
         ) : (
           <Avatar sx={{ width: 30, height: 30, fontSize: 11, bgcolor: org.is_base ? 'primary.main' : 'secondary.main' }}>
             {getOrgInitials(org.name)}
@@ -116,8 +143,8 @@ function OrgChip({ org, onClick }) {
       }
       sx={{
         height: 38,
-        minWidth: 58,
-        '& .MuiChip-avatar': { width: 30, height: 30, marginLeft: 0.5 },
+        minWidth: 72,
+        '& .MuiChip-avatar': { width: 42, height: 26, marginLeft: 0.25, overflow: 'visible' },
         '& .MuiChip-label': { px: 0.75 },
       }}
     />

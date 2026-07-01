@@ -5,6 +5,10 @@ import {
   Button,
   Card,
   CardContent,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Chip,
   CircularProgress,
   Divider,
@@ -19,14 +23,21 @@ import {
   Typography,
   Avatar,
   Alert,
+  IconButton,
+  MenuItem,
+  TextField,
+  Tooltip,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import WorkOutlineIcon from '@mui/icons-material/WorkOutlineOutlined';
 import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
 import BadgeIcon from '@mui/icons-material/Badge';
+import AssignmentReturnIcon from '@mui/icons-material/AssignmentReturn';
 import api from '../../api/axios';
+import { useAuth } from '../../context/AuthContext';
 
 const STATUS_COLORS = { active: 'success', inactive: 'default', on_leave: 'warning' };
+const CONDITION_OPTIONS = ['Good', 'Ok', 'Fair', 'Poor'];
 
 const EMPTY_VALUE = 'Not available';
 
@@ -71,9 +82,13 @@ function InfoRow({ label, value, icon }) {
 function EmployeeDashboard() {
   const { employeeId } = useParams();
   const navigate = useNavigate();
+  const { hasRole } = useAuth();
   const [employee, setEmployee] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [recoverDialog, setRecoverDialog] = useState({ open: false, row: null });
+  const [recoverCondition, setRecoverCondition] = useState('Good');
+  const [recovering, setRecovering] = useState(false);
 
   const loadEmployee = useCallback(async () => {
     setLoading(true);
@@ -97,6 +112,22 @@ function EmployeeDashboard() {
     const rows = employee?.assigned_assets || [];
     return rows.map((row) => ({ ...row, id: row.id || row.asset_detail?.id || row.asset?.id }));
   }, [employee]);
+  const canRecoverAssets = hasRole('super_admin', 'it_specialist');
+
+  const handleRecoverAsset = async () => {
+    if (!recoverDialog.row?.id) return;
+    setRecovering(true);
+    try {
+      await api.post(`/allocation/assets/${recoverDialog.row.id}/recover/`, { condition: recoverCondition });
+      setRecoverDialog({ open: false, row: null });
+      setRecoverCondition('Good');
+      await loadEmployee();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Unable to recover asset.');
+    } finally {
+      setRecovering(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -278,6 +309,7 @@ function EmployeeDashboard() {
                       <TableCell>Assigned By</TableCell>
                       <TableCell>Recovered Date</TableCell>
                       <TableCell>Notes</TableCell>
+                      <TableCell>Actions</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -297,6 +329,30 @@ function EmployeeDashboard() {
                         <TableCell>{row.assigned_by_name || EMPTY_VALUE}</TableCell>
                         <TableCell>{row.recovered_date || EMPTY_VALUE}</TableCell>
                         <TableCell>{row.notes || EMPTY_VALUE}</TableCell>
+                        <TableCell>
+                          {canRecoverAssets && row.status === 'active' ? (
+                            <Tooltip title="Recover asset">
+                              <IconButton
+                                size="small"
+                                color="warning"
+                                onClick={() => {
+                                  setRecoverCondition(
+                                    row.asset_detail?.attribute_values_with_names?.condition
+                                    || row.asset_detail?.attribute_values?.condition
+                                    || 'Good'
+                                  );
+                                  setRecoverDialog({ open: true, row });
+                                }}
+                              >
+                                <AssignmentReturnIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          ) : row.status !== 'active' ? (
+                            EMPTY_VALUE
+                          ) : (
+                            EMPTY_VALUE
+                          )}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -306,6 +362,38 @@ function EmployeeDashboard() {
           </Paper>
         </Grid>
       </Grid>
+
+      <Dialog open={recoverDialog.open} onClose={() => setRecoverDialog({ open: false, row: null })} maxWidth="xs" fullWidth>
+        <DialogTitle>Recover Asset</DialogTitle>
+        <DialogContent sx={{ pt: '12px !important' }}>
+          <Stack spacing={2}>
+            <Typography variant="body2" color="text.secondary">
+              Recover asset {recoverDialog.row?.asset_detail?.asset_id || recoverDialog.row?.asset || ''}. The availability status will be derived from the condition you select.
+            </Typography>
+            <TextField
+              select
+              label="Condition"
+              fullWidth
+              value={recoverCondition}
+              onChange={(e) => setRecoverCondition(e.target.value)}
+            >
+              {CONDITION_OPTIONS.map((condition) => (
+                <MenuItem key={condition} value={condition}>
+                  {condition}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRecoverDialog({ open: false, row: null })} variant="outlined">
+            Cancel
+          </Button>
+          <Button onClick={handleRecoverAsset} variant="contained" color="warning" disabled={recovering}>
+            {recovering ? 'Recovering...' : 'Recover'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

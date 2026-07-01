@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     'apps.allocation',
     'apps.tickets',
     'apps.integrations',
+    'apps.activity_log',
 ]
 
 MIDDLEWARE = [
@@ -37,6 +38,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'apps.activity_log.middleware.ActivityLogMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -98,11 +100,21 @@ SIMPLE_JWT = {
 
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:3000',
+    'http://localhost:3001',
+    'http://localhost:5173',
     'http://127.0.0.1:3000',
+    'http://127.0.0.1:3001',
+    'http://127.0.0.1:5173',
     'http://192.168.1.11:3000',
 ]
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
+
+if DEBUG:
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r'^http://localhost:\d+$',
+        r'^http://127\.0\.0\.1:\d+$',
+    ]
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},

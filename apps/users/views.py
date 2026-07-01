@@ -4,6 +4,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.activity_log.models import ActivityLog
+
 from .models import User
 from .permissions import IsSuperAdmin
 from .serializers import LoginSerializer, UserCreateSerializer, UserSerializer
@@ -27,6 +29,16 @@ class LoginView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
         tokens = get_tokens_for_user(user)
+        ActivityLog.objects.create(
+            user=user,
+            action='Logged in',
+            method='POST',
+            path='/api/auth/login/',
+            status_code=200,
+            ip_address=request.META.get('REMOTE_ADDR'),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')[:1000],
+            metadata={},
+        )
         return Response(
             {
                 'tokens': tokens,

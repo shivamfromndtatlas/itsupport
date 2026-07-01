@@ -22,6 +22,7 @@ import AssetAllocation from './pages/allocation/AssetAllocation';
 import Tickets from './pages/tickets/Tickets';
 import Integrations from './pages/integrations/Integrations';
 import Organisations from './pages/organisations/Organisations';
+import ActivityLogs from './pages/activity/ActivityLogs';
 
 function App() {
   return (
@@ -152,6 +153,15 @@ function App() {
             element={
               <RoleRoute roles={['super_admin']}>
                 <Organisations />
+              </RoleRoute>
+            }
+          />
+
+          <Route
+            path="/activity-log"
+            element={
+              <RoleRoute roles={['super_admin']}>
+                <ActivityLogs />
               </RoleRoute>
             }
           />
