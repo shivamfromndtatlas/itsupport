@@ -286,33 +286,32 @@ function Integrations() {
   };
 
   const activeTimeColumns = [
-    { field: 'date', headerName: 'Date', flex: 0.8, minWidth: 120 },
-    { field: 'asset_id', headerName: 'Laptop Asset ID', flex: 1, minWidth: 160 },
-    { field: 'name', headerName: 'Device', flex: 1, minWidth: 180 },
-    { field: 'serial_number', headerName: 'Serial Number', flex: 1, minWidth: 150 },
-    { field: 'category', headerName: 'Category', flex: 1, minWidth: 150 },
+    { field: 'date', headerName: 'Date', flex: 0.8, minWidth: 115 },
+    { field: 'name', headerName: 'Device', flex: 1, minWidth: 130 },
+    { field: 'serial_number', headerName: 'Serial Number', flex: 1, minWidth: 135 },
+    { field: 'category', headerName: 'Category', flex: 1, minWidth: 135 },
     {
       field: 'active_from',
       headerName: 'Active From',
       flex: 1,
-      minWidth: 190,
-      valueFormatter: ({ value }) => formatIndianDateTime(value),
+      minWidth: 170,
+      renderCell: ({ value }) => <Typography variant="body2">{formatIndianDateTime(value)}</Typography>,
     },
     {
       field: 'logged_off_at',
       headerName: 'Logged Off At',
       flex: 1,
-      minWidth: 190,
-      valueFormatter: ({ value }) => formatIndianDateTime(value),
+      minWidth: 170,
+      renderCell: ({ value }) => <Typography variant="body2">{formatIndianDateTime(value)}</Typography>,
     },
     {
       field: 'active_minutes',
       headerName: 'Total Active Time',
       flex: 0.9,
-      minWidth: 180,
-      valueFormatter: ({ value }) => formatActiveDuration(value),
+      minWidth: 160,
+      renderCell: ({ value }) => <Typography variant="body2">{formatActiveDuration(value)}</Typography>,
     },
-    { field: 'activity_source', headerName: 'Source', flex: 0.8, minWidth: 120 },
+    { field: 'activity_source', headerName: 'Source', flex: 0.8, minWidth: 110 },
   ];
 
   const selectedEmployee = employees.find((employee) => String(employee.id) === String(selectedEmployeeId));

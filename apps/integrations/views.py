@@ -1,7 +1,7 @@
 from django.db import models, transaction
 from django.utils import timezone
-from django.utils.dateparse import parse_date
-from datetime import timedelta
+from django.utils.dateparse import parse_date, parse_datetime
+from datetime import datetime, timedelta
 import re
 from rest_framework import status
 from rest_framework.decorators import action
@@ -158,6 +158,59 @@ ACTIVE_DURATION_KEYS = (
     'TotalActiveTime',
     'TotalUsageTime',
     'Uptime',
+)
+
+INTERVAL_EVENT_KEYS = (
+    'activity_events',
+    'ActivityEvents',
+    'activity_logs',
+    'ActivityLogs',
+    'sessions',
+    'Sessions',
+    'events',
+    'Events',
+    'online_status',
+    'OnlineStatus',
+    'device_activity',
+    'DeviceActivity',
+    'history',
+    'History',
+)
+
+EVENT_START_KEYS = (
+    'start',
+    'start_time',
+    'starttime',
+    'StartTime',
+    'Start Time',
+    'started_at',
+    'from',
+    'login_time',
+    'LoginTime',
+    'online_at',
+    'OnlineAt',
+    'active_from',
+    'timestamp',
+    'TimeStamp',
+    'time_stamp',
+    'EventTime',
+    'Event Time',
+    'datetime',
+    'date_time',
+)
+
+EVENT_END_KEYS = (
+    'end',
+    'end_time',
+    'EndTime',
+    'End Time',
+    'ended_at',
+    'to',
+    'logout_time',
+    'LogoutTime',
+    'offline_at',
+    'OfflineAt',
+    'logged_off_at',
 )
 
 
@@ -344,6 +397,108 @@ def extract_active_minutes(device):
     return 0.0, ''
 
 
+def extract_interval_events(device):
+    if not isinstance(device, dict):
+        return []
+
+    raw_sources = []
+
+    def collect_lists(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if key in INTERVAL_EVENT_KEYS and isinstance(nested, list):
+                    raw_sources.extend(nested)
+                collect_lists(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                collect_lists(nested)
+
+    collect_lists(device)
+
+    def event_role(status_value):
+        status = _normalize_lookup(status_value)
+        if status in {'online', 'login', 'loggedin', 'connected', 'active', 'start', 'resume'}:
+            return 'start'
+        if status in {'offline', 'logout', 'loggedout', 'disconnected', 'inactive', 'end', 'stop', 'shutdown'}:
+            return 'end'
+        return ''
+
+    intervals = []
+    point_events = []
+    for entry in raw_sources:
+        if not isinstance(entry, dict):
+            continue
+        start_value = dict_value_case_insensitive(entry, *EVENT_START_KEYS)
+        end_value = dict_value_case_insensitive(entry, *EVENT_END_KEYS)
+        status_value = dict_value_case_insensitive(entry, 'status', 'State', 'event_type', 'EventType', 'type', 'Type')
+
+        start_dt = parse_device_timestamp(start_value)
+        end_dt = parse_device_timestamp(end_value)
+        minutes_hint = parse_duration_to_minutes(
+            dict_value_case_insensitive(
+                entry,
+                'duration',
+                'Duration',
+                'active_minutes',
+                'ActiveMinutes',
+                'minutes',
+                'Minutes',
+                'elapsed',
+                'Elapsed',
+            )
+        )
+        if start_dt and not end_dt:
+            if minutes_hint is not None and minutes_hint > 0:
+                end_dt = start_dt + timedelta(minutes=minutes_hint)
+        elif end_dt and not start_dt and minutes_hint is not None and minutes_hint > 0:
+            start_dt = end_dt - timedelta(minutes=minutes_hint)
+        elif start_dt and end_dt and start_dt == end_dt and minutes_hint is not None and minutes_hint > 0:
+            end_dt = start_dt + timedelta(minutes=minutes_hint)
+        if start_dt and end_dt and end_dt >= start_dt:
+            intervals.append(
+                {
+                    'start': start_dt,
+                    'end': end_dt,
+                    'status': str(status_value or 'active'),
+                }
+            )
+            continue
+
+        timestamp_value = start_value or end_value or dict_value_case_insensitive(
+            entry,
+            'timestamp',
+            'TimeStamp',
+            'EventTime',
+            'Event Time',
+            'time',
+            'Time',
+        )
+        timestamp_dt = parse_device_timestamp(timestamp_value)
+        role = event_role(status_value)
+        if timestamp_dt and role:
+            point_events.append({'timestamp': timestamp_dt, 'role': role, 'status': str(status_value or role)})
+
+    point_events.sort(key=lambda item: item['timestamp'])
+    open_start = None
+    open_status = 'active'
+    for event in point_events:
+        if event['role'] == 'start':
+            open_start = event['timestamp']
+            open_status = event['status']
+        elif event['role'] == 'end' and open_start and event['timestamp'] >= open_start:
+            intervals.append(
+                {
+                    'start': open_start,
+                    'end': event['timestamp'],
+                    'status': open_status,
+                }
+            )
+            open_start = None
+
+    intervals.sort(key=lambda item: item['start'])
+    return intervals
+
+
 def build_date_range(start_date, end_date):
     current = start_date
     while current <= end_date:
@@ -351,8 +506,66 @@ def build_date_range(start_date, end_date):
         current += timedelta(days=1)
 
 
+def parse_device_timestamp(value):
+    if not value:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            # Support epoch values from MDM payloads.
+            dt = datetime.fromtimestamp(float(value), tz=timezone.get_current_timezone())
+        except (OverflowError, OSError, ValueError):
+            return None
+        return dt
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    dt = parse_datetime(text)
+    if dt is None:
+        normalized = text.replace('Z', '+00:00')
+        candidate_formats = (
+            '%Y-%m-%d %H:%M:%S',
+            '%Y-%m-%d %I:%M:%S %p',
+            '%d/%m/%Y %H:%M:%S',
+            '%d/%m/%Y %I:%M:%S %p',
+            '%d/%m/%Y, %I:%M:%S %p',
+            '%d-%m-%Y %H:%M:%S',
+            '%d-%m-%Y %I:%M:%S %p',
+            '%m/%d/%Y %H:%M:%S',
+            '%m/%d/%Y %I:%M:%S %p',
+            '%b %d %Y %I:%M:%S %p',
+            '%b %d, %Y %I:%M:%S %p',
+            '%d %b %Y %I:%M:%S %p',
+            '%Y/%m/%d %H:%M:%S',
+        )
+        dt = None
+        for fmt in candidate_formats:
+            try:
+                dt = datetime.strptime(normalized, fmt)
+                break
+            except ValueError:
+                continue
+        if dt is None:
+            return None
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt, timezone.get_current_timezone())
+    return dt
+
+
 def _normalize_lookup(value):
     return str(value or '').strip().lower()
+
+
+def dict_value_case_insensitive(data, *keys):
+    if not isinstance(data, dict):
+        return ''
+    normalized = {_normalize_lookup(key): value for key, value in data.items()}
+    for key in keys:
+        value = normalized.get(_normalize_lookup(key))
+        if value not in (None, ''):
+            return value
+    return ''
 
 
 def is_laptop_asset(asset):
@@ -701,14 +914,18 @@ class SureMDMViewSet(ViewSet):
                     'full_name': employee.full_name,
                 }
                 active_allocations = [allocation for allocation in employee.asset_allocations.all() if allocation.status == 'active']
-                active_allocation = next(
-                    (
-                        allocation
-                        for allocation in active_allocations
-                        if allocation.asset and is_laptop_asset(allocation.asset)
-                    ),
-                    None,
-                ) or (active_allocations[0] if active_allocations else None)
+                active_allocation = None
+                laptop_allocations = [
+                    allocation
+                    for allocation in active_allocations
+                    if allocation.asset and is_laptop_asset(allocation.asset)
+                ]
+                for allocation in laptop_allocations:
+                    if find_suremdm_asset_for_employee_asset(allocation.asset):
+                        active_allocation = allocation
+                        break
+                if active_allocation is None:
+                    active_allocation = laptop_allocations[0] if laptop_allocations else (active_allocations[0] if active_allocations else None)
                 if active_allocation and active_allocation.asset:
                     asset = active_allocation.asset
                     resolved_mdm_asset = find_suremdm_asset_for_employee_asset(asset)
@@ -765,12 +982,51 @@ class SureMDMViewSet(ViewSet):
 
         results = []
         total_minutes = 0.0
-        for day in build_date_range(start_date, end_date):
-            for device in devices[:1]:
-                minutes, source_value = extract_active_minutes(device)
-                total_minutes += minutes
-                active_from = f'{day.isoformat()}T09:00:00'
-                active_to = device['last_seen'] or f'{day.isoformat()}T18:00:00'
+        for device in devices:
+            interval_events = extract_interval_events(device)
+            if interval_events:
+                for interval in interval_events:
+                    if interval['end'].date() < start_date or interval['start'].date() > end_date:
+                        continue
+                    minutes = max((interval['end'] - interval['start']).total_seconds() / 60, 0)
+                    total_minutes += minutes
+                    results.append(
+                        {
+                            'date': interval['start'].date().isoformat(),
+                            'device_id': device['suremdm_device_id'],
+                            'suremdm_device_id': device['suremdm_device_id'],
+                            'asset_id': selected_asset['asset_id'] if selected_asset else '',
+                            'name': device['name'],
+                            'serial_number': device['serial_number'],
+                            'platform': device['platform'],
+                            'model': device['model'],
+                            'category': device['category'],
+                            'active_from': interval['start'].isoformat(),
+                            'logged_off_at': interval['end'].isoformat(),
+                            'active_minutes': round(minutes, 2),
+                            'active_hours': round(minutes / 60, 2),
+                            'activity_source': interval['status'] or 'event',
+                            'raw_activity_value': interval['status'] or '',
+                        }
+                    )
+                continue
+
+            minutes, source_value = extract_active_minutes(device)
+            active_at = parse_device_timestamp(device.get('last_seen'))
+            if active_at is None:
+                active_at = timezone.now()
+            activity_date = active_at.date()
+            for day in build_date_range(start_date, end_date):
+                is_activity_date = day == activity_date
+                row_minutes = minutes if is_activity_date else 0.0
+                if is_activity_date:
+                    total_minutes += row_minutes
+                day_logged_off_at = active_at.replace(year=day.year, month=day.month, day=day.day) if active_at else None
+                day_active_from = (
+                    day_logged_off_at - timedelta(minutes=row_minutes)
+                    if day_logged_off_at and row_minutes > 0
+                    else ''
+                )
                 results.append(
                     {
                         'date': day.isoformat(),
@@ -782,10 +1038,10 @@ class SureMDMViewSet(ViewSet):
                         'platform': device['platform'],
                         'model': device['model'],
                         'category': device['category'],
-                        'active_from': active_from,
-                        'logged_off_at': active_to,
-                        'active_minutes': round(minutes, 2),
-                        'active_hours': round(minutes / 60, 2),
+                        'active_from': day_active_from.isoformat() if day_active_from else '',
+                        'logged_off_at': day_logged_off_at.isoformat() if day_logged_off_at else '',
+                        'active_minutes': round(row_minutes, 2),
+                        'active_hours': round(row_minutes / 60, 2),
                         'activity_source': 'api_field' if source_value else 'last_seen_only',
                         'raw_activity_value': source_value,
                     }
