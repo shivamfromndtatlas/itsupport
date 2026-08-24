@@ -1,9 +1,52 @@
 from io import BytesIO
+from unittest.mock import patch
 
+from django.core.management import call_command
 from django.test import TestCase
 
-from .models import AssetType
-from .views import ASSET_TEMPLATE_BASE_HEADERS, build_xlsx_workbook, parse_asset_bulk_upload
+from apps.integrations.models import SureMDMConnection
+from apps.integrations.suremdm import SureMDMClient
+
+from .models import AssetType, InstalledApplication, InstalledAppReportImport
+from .views import ASSET_TEMPLATE_BASE_HEADERS, AUTO_SYNC_FILE_NAME_PREFIX, build_xlsx_workbook, parse_asset_bulk_upload
+
+
+class SyncInstalledAppsCommandTests(TestCase):
+    def test_skips_when_suremdm_not_configured(self):
+        call_command('sync_installed_apps')
+
+        self.assertEqual(InstalledAppReportImport.objects.count(), 0)
+
+    @patch.object(SureMDMClient, 'trigger_apps_refresh')
+    @patch.object(SureMDMClient, 'list_devices')
+    def test_harvests_embedded_apps_and_requests_a_refresh_for_next_run(self, list_devices, trigger_apps_refresh):
+        SureMDMConnection.objects.create(
+            base_url='https://suremdm.42gears.com/api',
+            username='user',
+            password='pass',
+            api_key='key',
+        )
+        list_devices.return_value = [
+            {
+                'DeviceID': '123',
+                'DeviceName': 'Front Desk Laptop',
+                'ApplicationDetails': [
+                    {'ApplicationName': 'Google Chrome', 'Version': '120.0', 'Publisher': 'Google LLC'},
+                ],
+            }
+        ]
+        trigger_apps_refresh.return_value = True
+
+        call_command('sync_installed_apps')
+
+        report_import = InstalledAppReportImport.objects.get()
+        self.assertTrue(report_import.file_name.startswith(AUTO_SYNC_FILE_NAME_PREFIX))
+        self.assertEqual(report_import.app_count, 1)
+        installed_app = InstalledApplication.objects.get()
+        self.assertEqual(installed_app.application_name, 'Google Chrome')
+        self.assertEqual(installed_app.application_version, '120.0')
+        self.assertEqual(installed_app.device_name, 'Front Desk Laptop')
+        trigger_apps_refresh.assert_any_call('123')
 
 
 class AssetBulkUploadParserTests(TestCase):

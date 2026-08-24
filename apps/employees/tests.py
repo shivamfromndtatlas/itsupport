@@ -1,6 +1,7 @@
 from django.test import TestCase
 from django.urls import reverse
 
+from apps.employees import alias_rules
 from apps.employees.models import Employee
 from apps.employees.base_org_assignment import skip_base_org_assignment
 from apps.organisations.models import Organisation, OrganisationMemberProfile
@@ -242,3 +243,191 @@ class EmployeeDashboardTests(APITestCase):
         self.assertEqual(response.data['core_process_name'], 'Business Development Process')
         self.assertEqual(response.data['status'], 'inactive')
         self.assertEqual(response.data['date_of_joining'], '2024-01-15')
+
+
+class AliasRulesTests(TestCase):
+    def test_derive_client_email_ignores_middle_name_and_lowercases(self):
+        self.assertEqual(alias_rules.derive_client_email('Amy Jones'), 'ajones@aeis.com')
+        self.assertEqual(alias_rules.derive_client_email('Andrew King'), 'aking@aeis.com')
+
+    def test_rejects_alias_with_middle_name(self):
+        with self.assertRaises(alias_rules.AliasError):
+            alias_rules.split_two_word_name('Amy Jane Jones')
+
+    def test_rejects_single_word_alias(self):
+        with self.assertRaises(alias_rules.AliasError):
+            alias_rules.split_two_word_name('Amy')
+
+    def test_check_alias_rejects_mismatched_initials(self):
+        with self.assertRaises(alias_rules.AliasError):
+            alias_rules.check_alias('Ajay Kumar', 'Steven Miller')
+
+    def test_check_alias_accepts_matching_initials(self):
+        client_email = alias_rules.check_alias('Ajay Kumar', 'Andrew King')
+        self.assertEqual(client_email, 'aking@aeis.com')
+
+    def test_check_alias_rejects_global_collision_regardless_of_first_name(self):
+        Employee.objects.create(
+            employee_id='EMP400',
+            full_name='Amit Jones',
+            alias_name='Amy Jones',
+            client_email='ajones@aeis.com',
+            official_email='amit@example.com',
+            status='active',
+        )
+        # A different employee, also initials A/J, whose alias would derive
+        # to the same ajones@aeis.com must be rejected -- per rule 4, this
+        # applies "irrespective of whatever be the first name".
+        with self.assertRaises(alias_rules.AliasError):
+            alias_rules.check_alias('Arjun Jones', 'Alan Jones')
+
+    def test_check_alias_detects_collision_with_legacy_official_email(self):
+        # Pre-existing records set their client-style email by hand in
+        # official_email, before this checker existed. Those must still
+        # block a new alias deriving to the same email.
+        Employee.objects.create(
+            employee_id='EMP404',
+            full_name='Abhishek Poddar',
+            alias_name='Alex Brooks',
+            official_email='abrooks@aeis.com',
+            status='active',
+        )
+        with self.assertRaises(alias_rules.AliasError):
+            alias_rules.check_alias('', 'Alex Brooks')
+
+    def test_check_alias_skips_initials_when_full_name_omitted(self):
+        # The standalone Alias Name Checker looks up availability without an
+        # employee attached, so initials-matching shouldn't be enforced.
+        client_email = alias_rules.check_alias('', 'Steven Miller')
+        self.assertEqual(client_email, 'smiller@aeis.com')
+
+    def test_check_alias_still_enforces_uniqueness_when_full_name_omitted(self):
+        Employee.objects.create(
+            employee_id='EMP403',
+            full_name='Amit Jones',
+            alias_name='Amy Jones',
+            client_email='ajones@aeis.com',
+            official_email='amit5@example.com',
+            status='active',
+        )
+        with self.assertRaises(alias_rules.AliasError):
+            alias_rules.check_alias('', 'Alan Jones')
+
+    def test_check_alias_excludes_own_record_on_update(self):
+        employee = Employee.objects.create(
+            employee_id='EMP401',
+            full_name='Amit Jones',
+            alias_name='Amy Jones',
+            client_email='ajones@aeis.com',
+            official_email='amit2@example.com',
+            status='active',
+        )
+        # Re-validating the same alias for the same employee should not
+        # collide with itself.
+        client_email = alias_rules.check_alias(
+            'Amit Jones', 'Amy Jones', exclude_employee_id=employee.pk
+        )
+        self.assertEqual(client_email, 'ajones@aeis.com')
+
+    def test_suggest_aliases_matches_initials_and_excludes_taken_emails(self):
+        Employee.objects.create(
+            employee_id='EMP402',
+            full_name='Andrew King Real',
+            alias_name='Andrew King',
+            client_email='aking@aeis.com',
+            official_email='andrewking@example.com',
+            status='active',
+        )
+
+        suggestions = alias_rules.suggest_aliases('Ajay Kumar')
+
+        self.assertTrue(len(suggestions) > 0)
+        emails = [s['client_email'] for s in suggestions]
+        self.assertEqual(len(emails), len(set(emails)), 'suggestions must not share a derived email')
+        for suggestion in suggestions:
+            first, last = suggestion['alias_name'].split()
+            self.assertEqual(first[0], 'A')
+            self.assertEqual(last[0], 'K')
+            self.assertNotEqual(suggestion['client_email'], 'aking@aeis.com')
+
+
+class EmployeeSerializerAliasTests(TestCase):
+    def test_create_derives_client_email_from_alias(self):
+        data = {
+            'employee_id': 'EMP500',
+            'full_name': 'Ajay Kumar',
+            'alias_name': 'Andrew King',
+            'official_email': 'ajay@example.com',
+            'status': 'active',
+        }
+        serializer = EmployeeSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        employee = serializer.save()
+        self.assertEqual(employee.client_email, 'aking@aeis.com')
+
+    def test_create_rejects_alias_with_mismatched_initials(self):
+        data = {
+            'employee_id': 'EMP501',
+            'full_name': 'Ajay Kumar',
+            'alias_name': 'Steven Miller',
+            'official_email': 'ajay2@example.com',
+            'status': 'active',
+        }
+        serializer = EmployeeSerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('alias_name', serializer.errors)
+
+    def test_second_employee_cannot_reuse_derived_email(self):
+        Employee.objects.create(
+            employee_id='EMP502',
+            full_name='Amit Jones',
+            alias_name='Amy Jones',
+            client_email='ajones@aeis.com',
+            official_email='amit3@example.com',
+            status='active',
+        )
+        data = {
+            'employee_id': 'EMP503',
+            'full_name': 'Arjun Jones',
+            'alias_name': 'Alan Jones',
+            'official_email': 'arjun@example.com',
+            'status': 'active',
+        }
+        serializer = EmployeeSerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('alias_name', serializer.errors)
+
+    def test_update_keeps_legacy_alias_with_mismatched_initials(self):
+        # Alias set by hand before the initials-matching rule existed --
+        # editing an unrelated field shouldn't be blocked by it.
+        employee = Employee.objects.create(
+            employee_id='EMP504',
+            full_name='Saveek Singh',
+            alias_name='Steve Ross',
+            client_email='sross@aeis.com',
+            official_email='saveek@example.com',
+            status='active',
+        )
+        serializer = EmployeeSerializer(
+            employee, data={'status': 'inactive'}, partial=True
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        updated = serializer.save()
+        self.assertEqual(updated.status, 'inactive')
+        self.assertEqual(updated.alias_name, 'Steve Ross')
+        self.assertEqual(updated.client_email, 'sross@aeis.com')
+
+    def test_update_still_validates_a_newly_changed_alias(self):
+        employee = Employee.objects.create(
+            employee_id='EMP505',
+            full_name='Saveek Singh',
+            alias_name='Steve Ross',
+            client_email='sross@aeis.com',
+            official_email='saveek2@example.com',
+            status='active',
+        )
+        serializer = EmployeeSerializer(
+            employee, data={'alias_name': 'Ryan Miles'}, partial=True
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('alias_name', serializer.errors)

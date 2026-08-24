@@ -180,7 +180,7 @@ class LicenseAllocationViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         license_obj = serializer.validated_data['license']
-        if license_obj.available_seats <= 0:
+        if not license_obj.is_unlimited and license_obj.available_seats <= 0:
             from rest_framework.exceptions import ValidationError
             raise ValidationError('No available seats for this licence.')
         allocation = LicenseAllocation(**serializer.validated_data)
@@ -188,9 +188,10 @@ class LicenseAllocationViewSet(viewsets.ModelViewSet):
         allocation.status = 'active'
         allocation.full_clean()
         allocation.save()
-        # Decrement available seats
-        license_obj.available_seats -= 1
-        license_obj.save(update_fields=['available_seats'])
+        if not license_obj.is_unlimited:
+            # Decrement available seats
+            license_obj.available_seats -= 1
+            license_obj.save(update_fields=['available_seats'])
 
     @action(detail=True, methods=['post'], url_path='revoke')
     def revoke(self, request, pk=None):
@@ -212,8 +213,9 @@ class LicenseAllocationViewSet(viewsets.ModelViewSet):
 
         # Return seat to licence pool
         license_obj = allocation.license
-        license_obj.available_seats += 1
-        license_obj.save(update_fields=['available_seats'])
+        if not license_obj.is_unlimited:
+            license_obj.available_seats += 1
+            license_obj.save(update_fields=['available_seats'])
 
         return Response(
             {

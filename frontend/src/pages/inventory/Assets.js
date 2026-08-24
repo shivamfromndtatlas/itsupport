@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Box,
   Tabs,
@@ -73,9 +73,10 @@ const EMPTY_ASSET = {
 };
 
 const EMPTY_LICENSE = {
-  organisation: '',
+  organisations: [],
   software_name: '',
   license_key: '',
+  is_unlimited: false,
   total_seats: '',
   vendor: '',
   purchase_date: '',
@@ -136,6 +137,23 @@ function Assets() {
 
   const [snack, setSnack] = useState({ open: false, msg: '', severity: 'success' });
   const showSnack = (msg, severity = 'success') => setSnack({ open: true, msg, severity });
+
+  const [searchParams] = useSearchParams();
+
+  // Support drill-down links from the Inventory Dashboard, e.g.
+  // /inventory/assets?type=Laptop&organisation_id=3
+  useEffect(() => {
+    const typeParam = searchParams.get('type');
+    const orgParam = searchParams.get('organisation_id');
+    if (typeParam) {
+      setSelectedHwTypeName(typeParam);
+      setTab(0);
+    }
+    if (orgParam) {
+      setSelectedOrganisationId(orgParam);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const hardwareAssetTypeOptions = useMemo(
     () => assetTypes.filter((type) => type.asset_type === 'hardware'),
@@ -353,6 +371,22 @@ function Assets() {
     }));
   };
 
+  const getAvailabilityStatusValue = () =>
+    assetForm.attribute_values?.['10']
+    || assetForm.attribute_values?.['Availability Status']
+    || 'In Stock';
+
+  const updateAvailabilityStatusValue = (value) => {
+    setAssetForm((prev) => ({
+      ...prev,
+      attribute_values: {
+        ...(prev.attribute_values || {}),
+        '10': value,
+        'Availability Status': value,
+      },
+    }));
+  };
+
   const buildAssetPayload = () => {
     const payload = {
       asset_type: assetForm.asset_type,
@@ -475,6 +509,8 @@ function Assets() {
       attribute_values: {
         condition: 'Good',
         ...(row.attribute_values || {}),
+        '10': getAvailabilityStatusLabel(row),
+        'Availability Status': getAvailabilityStatusLabel(row),
       },
     });
     setAssetDialog(true);
@@ -584,12 +620,11 @@ function Assets() {
     setEditLicense(row);
     setLicenseForm({
       software_name: row.software_name || '',
-      organisation: row.organisation_detail?.id
-        ? String(row.organisation_detail.id)
-        : row.organisation
-          ? String(row.organisation)
-          : '',
+      organisations: (row.organisation_details || []).length
+        ? row.organisation_details.map((org) => String(org.id))
+        : (row.organisations || []).map(String),
       license_key: row.license_key || '',
+      is_unlimited: row.is_unlimited || false,
       total_seats: row.total_seats || '',
       vendor: row.vendor || '',
       purchase_date: row.purchase_date || '',
@@ -600,14 +635,31 @@ function Assets() {
     setLicenseDialog(true);
   };
 
+  const buildLicensePayload = () => {
+    const payload = { ...licenseForm };
+    if (payload.is_unlimited || payload.total_seats === '') {
+      delete payload.total_seats;
+    }
+    // license_type (a ChoiceField) and the date fields reject an empty
+    // string - they must be omitted entirely to fall back to their default
+    // or null, unlike plain text fields which accept blank values.
+    ['license_type', 'purchase_date', 'expiry_date'].forEach((field) => {
+      if (payload[field] === '') {
+        delete payload[field];
+      }
+    });
+    return payload;
+  };
+
   const handleSaveLicense = async () => {
     setSavingLicense(true);
     try {
+      const payload = buildLicensePayload();
       if (editLicense) {
-        await api.patch(`/inventory/software-licenses/${editLicense.id}/`, licenseForm);
+        await api.patch(`/inventory/software-licenses/${editLicense.id}/`, payload);
         showSnack('License updated.');
       } else {
-        await api.post('/inventory/software-licenses/', licenseForm);
+        await api.post('/inventory/software-licenses/', payload);
         showSnack('License added.');
       }
       setLicenseDialog(false);
@@ -715,30 +767,18 @@ function Assets() {
   const licenseColumns = [
     { field: 'software_name', headerName: 'Software Name', flex: 1, minWidth: 150 },
     {
-      field: 'organisation_detail',
-      headerName: 'Organisation',
+      field: 'organisation_details',
+      headerName: 'Organisations',
       width: 220,
       sortable: false,
       renderCell: ({ row }) => {
-        const org = row.organisation_detail || organisationById.get(String(row.organisation?.id || row.organisation)) || null;
-        const logoUrl = getOrganisationLogoUrl(org?.logo);
-        if (!logoUrl) return org?.name || '--';
+        const orgs = row.organisation_details || [];
+        if (!orgs.length) return '--';
         return (
-          <Box sx={{ width: '100%', minWidth: 0, display: 'flex', alignItems: 'center' }}>
-            <Box
-              component="img"
-              src={logoUrl}
-              alt={org?.name || 'Organisation logo'}
-              title={org?.name || 'Organisation'}
-              sx={{
-                display: 'block',
-                width: '100%',
-                maxWidth: 168,
-                height: 32,
-                objectFit: 'contain',
-                objectPosition: 'left center',
-              }}
-            />
+          <Box sx={{ width: '100%', minWidth: 0, display: 'flex', flexWrap: 'wrap', gap: 0.5, py: 0.5 }}>
+            {orgs.map((org) => (
+              <Chip key={org.id} label={org.name} size="small" title={org.name} />
+            ))}
           </Box>
         );
       },
@@ -754,8 +794,20 @@ function Assets() {
         </Typography>
       ),
     },
-    { field: 'total_seats', headerName: 'Total Seats', width: 120, type: 'number' },
-    { field: 'available_seats', headerName: 'Available', width: 110, type: 'number' },
+    {
+      field: 'total_seats',
+      headerName: 'Total Seats',
+      width: 120,
+      type: 'number',
+      renderCell: ({ row, value }) => (row.is_unlimited ? 'Unlimited' : value),
+    },
+    {
+      field: 'available_seats',
+      headerName: 'Available',
+      width: 110,
+      type: 'number',
+      renderCell: ({ row, value }) => (row.is_unlimited ? 'Unlimited' : value),
+    },
     { field: 'expiry_date', headerName: 'Expiry', width: 120 },
     {
       field: 'is_active',
@@ -1084,6 +1136,22 @@ function Assets() {
                 ))}
               </TextField>
             </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                select
+                label="Availability Status"
+                fullWidth
+                value={getAvailabilityStatusValue()}
+                onChange={(e) => updateAvailabilityStatusValue(e.target.value)}
+                helperText={editAsset ? 'Mark as Under Repair if the asset is damaged.' : undefined}
+              >
+                {Object.keys(AVAILABILITY_STATUS_COLORS).map((option) => (
+                  <MenuItem key={option} value={option}>
+                    {option}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
           </Grid>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -1102,14 +1170,32 @@ function Assets() {
             <Grid item xs={12} sm={6}>
               <TextField
                 select
-                label="Organisation"
+                label="Organisations"
                 fullWidth
-                value={licenseForm.organisation}
-                onChange={(e) => setLicenseForm({ ...licenseForm, organisation: e.target.value })}
+                value={licenseForm.organisations}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setLicenseForm({
+                    ...licenseForm,
+                    organisations: typeof value === 'string' ? value.split(',') : value,
+                  });
+                }}
+                slotProps={{
+                  select: {
+                    multiple: true,
+                    renderValue: (selected) => {
+                      const names = organisations
+                        .filter((org) => selected.includes(String(org.id)))
+                        .map((org) => org.name);
+                      return names.length ? names.join(', ') : 'Unassigned';
+                    },
+                  },
+                }}
+                helperText="Select every organisation this license can be used by."
               >
-                <MenuItem value="">Unassigned</MenuItem>
                 {organisations.map((org) => (
                   <MenuItem key={org.id} value={String(org.id)}>
+                    <Checkbox checked={licenseForm.organisations.includes(String(org.id))} size="small" />
                     {org.name}
                   </MenuItem>
                 ))}
@@ -1129,6 +1215,18 @@ function Assets() {
                 fullWidth
                 value={licenseForm.license_key}
                 onChange={(e) => setLicenseForm({ ...licenseForm, license_key: e.target.value })}
+                helperText="Optional — leave blank if this software doesn't use a license key (e.g. Adobe Reader)."
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={licenseForm.is_unlimited}
+                    onChange={(e) => setLicenseForm({ ...licenseForm, is_unlimited: e.target.checked })}
+                  />
+                }
+                label="Unlimited license (no seat limit)"
               />
             </Grid>
             <Grid item xs={12} sm={6}>
@@ -1138,6 +1236,8 @@ function Assets() {
                 fullWidth
                 value={licenseForm.total_seats}
                 onChange={(e) => setLicenseForm({ ...licenseForm, total_seats: e.target.value })}
+                disabled={licenseForm.is_unlimited}
+                helperText={licenseForm.is_unlimited ? 'Not needed for unlimited licenses.' : ''}
               />
             </Grid>
             <Grid item xs={12} sm={6}>

@@ -2,19 +2,29 @@ from django.db import models, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from datetime import datetime, timedelta
-import re
+from datetime import timezone as dt_timezone
 from rest_framework import status
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.viewsets import ViewSet
+from rest_framework.viewsets import ModelViewSet, ViewSet
 
 from apps.inventory.models import Asset, AssetType
 from apps.users.permissions import IsITSpecialistOrSuperAdmin
 
-from .models import SureMDMConnection
-from .serializers import SureMDMConnectionSerializer
+from .models import SureMDMConnection, SynthesiaConnection, SynthesiaInvoice, TeamViewerConnection, TrellixConnection
+from .serializers import (
+    SureMDMConnectionSerializer,
+    SynthesiaConnectionSerializer,
+    SynthesiaInvoiceSerializer,
+    TeamViewerConnectionSerializer,
+    TrellixConnectionSerializer,
+)
 from .suremdm import SureMDMClient, SureMDMError
+from .synthesia import SynthesiaClient, SynthesiaError
+from .teamviewer import TeamViewerClient, TeamViewerError
+from .trellix import TrellixClient, TrellixError
 
 
 CATEGORY_KEYS = (
@@ -145,75 +155,6 @@ GROUP_DEVICE_IDS = (
     'Android',
 )
 
-ACTIVE_DURATION_KEYS = (
-    'ActiveTime',
-    'ActiveDuration',
-    'UsageTime',
-    'UsageDuration',
-    'OnlineDuration',
-    'SessionDuration',
-    'TimeSpent',
-    'ScreenOnTime',
-    'ScreenActiveTime',
-    'TotalActiveTime',
-    'TotalUsageTime',
-    'Uptime',
-)
-
-INTERVAL_EVENT_KEYS = (
-    'activity_events',
-    'ActivityEvents',
-    'activity_logs',
-    'ActivityLogs',
-    'sessions',
-    'Sessions',
-    'events',
-    'Events',
-    'online_status',
-    'OnlineStatus',
-    'device_activity',
-    'DeviceActivity',
-    'history',
-    'History',
-)
-
-EVENT_START_KEYS = (
-    'start',
-    'start_time',
-    'starttime',
-    'StartTime',
-    'Start Time',
-    'started_at',
-    'from',
-    'login_time',
-    'LoginTime',
-    'online_at',
-    'OnlineAt',
-    'active_from',
-    'timestamp',
-    'TimeStamp',
-    'time_stamp',
-    'EventTime',
-    'Event Time',
-    'datetime',
-    'date_time',
-)
-
-EVENT_END_KEYS = (
-    'end',
-    'end_time',
-    'EndTime',
-    'End Time',
-    'ended_at',
-    'to',
-    'logout_time',
-    'LogoutTime',
-    'offline_at',
-    'OfflineAt',
-    'logged_off_at',
-)
-
-
 def get_connection():
     return SureMDMConnection.objects.order_by('-updated_at').first()
 
@@ -314,198 +255,6 @@ def device_value(device, *keys, default=''):
     return default
 
 
-def parse_duration_to_minutes(value):
-    if value in (None, ''):
-        return None
-    if isinstance(value, (int, float)):
-        if value < 0:
-            return None
-        return float(value) / 60 if value > 240 else float(value)
-    text = str(value).strip()
-    if not text:
-        return None
-
-    lowered = text.lower()
-    if lowered in {'n/a', 'na', 'none', 'null'}:
-        return None
-
-    total_minutes = 0.0
-    matched = False
-    for chunk in lowered.replace(',', ' ').split():
-        try:
-            if chunk.endswith('ms'):
-                total_minutes += float(chunk[:-2]) / 60000
-                matched = True
-            elif chunk.endswith('s'):
-                total_minutes += float(chunk[:-1]) / 60
-                matched = True
-            elif chunk.endswith('m'):
-                total_minutes += float(chunk[:-1])
-                matched = True
-            elif chunk.endswith('h'):
-                total_minutes += float(chunk[:-1]) * 60
-                matched = True
-            elif chunk.endswith('d'):
-                total_minutes += float(chunk[:-1]) * 1440
-                matched = True
-            elif ':' in chunk:
-                parts = [float(part) for part in chunk.split(':')]
-                if len(parts) == 2:
-                    total_minutes += parts[0] * 60 + parts[1]
-                    matched = True
-                elif len(parts) == 3:
-                    total_minutes += parts[0] * 60 + parts[1] + parts[2] / 60
-                    matched = True
-            else:
-                try:
-                    total_minutes += float(chunk)
-                    matched = True
-                except ValueError:
-                    continue
-        except ValueError:
-            continue
-
-    if matched:
-        return total_minutes
-
-    match = re.fullmatch(r'(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?', lowered)
-    if match and any(match.groups()):
-        days, hours, minutes, seconds = [int(part or 0) for part in match.groups()]
-        return days * 1440 + hours * 60 + minutes + seconds / 60
-
-    return None
-
-
-def extract_active_minutes(device):
-    raw_candidates = []
-    if isinstance(device, dict):
-        for key in ACTIVE_DURATION_KEYS:
-            raw_candidates.append(device.get(key))
-        raw = device.get('raw')
-        if isinstance(raw, dict):
-            for key in ACTIVE_DURATION_KEYS:
-                raw_candidates.append(raw.get(key))
-        flattened = flatten_device(device)
-        for key in ACTIVE_DURATION_KEYS:
-            for candidate_key, candidate_value in flattened.items():
-                if str(candidate_key).lower().replace(' ', '').replace('_', '') == str(key).lower().replace(' ', '').replace('_', ''):
-                    raw_candidates.append(candidate_value)
-    for candidate in raw_candidates:
-        minutes = parse_duration_to_minutes(candidate)
-        if minutes is not None:
-            return minutes, candidate
-    return 0.0, ''
-
-
-def extract_interval_events(device):
-    if not isinstance(device, dict):
-        return []
-
-    raw_sources = []
-
-    def collect_lists(value):
-        if isinstance(value, dict):
-            for key, nested in value.items():
-                if key in INTERVAL_EVENT_KEYS and isinstance(nested, list):
-                    raw_sources.extend(nested)
-                collect_lists(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                collect_lists(nested)
-
-    collect_lists(device)
-
-    def event_role(status_value):
-        status = _normalize_lookup(status_value)
-        if status in {'online', 'login', 'loggedin', 'connected', 'active', 'start', 'resume'}:
-            return 'start'
-        if status in {'offline', 'logout', 'loggedout', 'disconnected', 'inactive', 'end', 'stop', 'shutdown'}:
-            return 'end'
-        return ''
-
-    intervals = []
-    point_events = []
-    for entry in raw_sources:
-        if not isinstance(entry, dict):
-            continue
-        start_value = dict_value_case_insensitive(entry, *EVENT_START_KEYS)
-        end_value = dict_value_case_insensitive(entry, *EVENT_END_KEYS)
-        status_value = dict_value_case_insensitive(entry, 'status', 'State', 'event_type', 'EventType', 'type', 'Type')
-
-        start_dt = parse_device_timestamp(start_value)
-        end_dt = parse_device_timestamp(end_value)
-        minutes_hint = parse_duration_to_minutes(
-            dict_value_case_insensitive(
-                entry,
-                'duration',
-                'Duration',
-                'active_minutes',
-                'ActiveMinutes',
-                'minutes',
-                'Minutes',
-                'elapsed',
-                'Elapsed',
-            )
-        )
-        if start_dt and not end_dt:
-            if minutes_hint is not None and minutes_hint > 0:
-                end_dt = start_dt + timedelta(minutes=minutes_hint)
-        elif end_dt and not start_dt and minutes_hint is not None and minutes_hint > 0:
-            start_dt = end_dt - timedelta(minutes=minutes_hint)
-        elif start_dt and end_dt and start_dt == end_dt and minutes_hint is not None and minutes_hint > 0:
-            end_dt = start_dt + timedelta(minutes=minutes_hint)
-        if start_dt and end_dt and end_dt >= start_dt:
-            intervals.append(
-                {
-                    'start': start_dt,
-                    'end': end_dt,
-                    'status': str(status_value or 'active'),
-                }
-            )
-            continue
-
-        timestamp_value = start_value or end_value or dict_value_case_insensitive(
-            entry,
-            'timestamp',
-            'TimeStamp',
-            'EventTime',
-            'Event Time',
-            'time',
-            'Time',
-        )
-        timestamp_dt = parse_device_timestamp(timestamp_value)
-        role = event_role(status_value)
-        if timestamp_dt and role:
-            point_events.append({'timestamp': timestamp_dt, 'role': role, 'status': str(status_value or role)})
-
-    point_events.sort(key=lambda item: item['timestamp'])
-    open_start = None
-    open_status = 'active'
-    for event in point_events:
-        if event['role'] == 'start':
-            open_start = event['timestamp']
-            open_status = event['status']
-        elif event['role'] == 'end' and open_start and event['timestamp'] >= open_start:
-            intervals.append(
-                {
-                    'start': open_start,
-                    'end': event['timestamp'],
-                    'status': open_status,
-                }
-            )
-            open_start = None
-
-    intervals.sort(key=lambda item: item['start'])
-    return intervals
-
-
-def build_date_range(start_date, end_date):
-    current = start_date
-    while current <= end_date:
-        yield current
-        current += timedelta(days=1)
-
-
 def parse_device_timestamp(value):
     if not value:
         return None
@@ -557,15 +306,81 @@ def _normalize_lookup(value):
     return str(value or '').strip().lower()
 
 
-def dict_value_case_insensitive(data, *keys):
-    if not isinstance(data, dict):
-        return ''
-    normalized = {_normalize_lookup(key): value for key, value in data.items()}
-    for key in keys:
-        value = normalized.get(_normalize_lookup(key))
-        if value not in (None, ''):
-            return value
-    return ''
+def format_suremdm_datetime(dt):
+    return dt.astimezone(dt_timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+
+
+DEVICE_LOG_ONLINE_MESSAGE = '1'
+DEVICE_LOG_OFFLINE_MESSAGE = '0'
+
+
+def fetch_device_online_intervals(client, device_id, range_start, range_end):
+    """
+    Pull real online/offline session events for a device from SureMDM's
+    device activity log (POST /devicelog/) and pair them into intervals.
+
+    SureMDM's basic device-list API carries no session/duration data at
+    all, so this is the only source of truth for how long a device was
+    actually online in a given window.
+    """
+    if not device_id:
+        return []
+
+    try:
+        rows = client.device_log(
+            device_id,
+            format_suremdm_datetime(range_start),
+            format_suremdm_datetime(range_end),
+        )
+    except SureMDMError:
+        return []
+
+    events = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        message = str(row.get('Message') or '').strip()
+        if message not in (DEVICE_LOG_ONLINE_MESSAGE, DEVICE_LOG_OFFLINE_MESSAGE):
+            continue
+        event_time = parse_device_timestamp(row.get('Time'))
+        if not event_time:
+            continue
+        events.append((event_time, message))
+    events.sort(key=lambda item: item[0])
+
+    intervals = []
+    open_start = None
+    for event_time, message in events:
+        if message == DEVICE_LOG_ONLINE_MESSAGE:
+            if open_start is None:
+                open_start = event_time
+        elif message == DEVICE_LOG_OFFLINE_MESSAGE and open_start is not None:
+            if event_time > open_start:
+                intervals.append({'start': open_start, 'end': event_time})
+            open_start = None
+
+    if open_start is not None:
+        # Device is still online with no offline event yet in this window.
+        still_online_until = min(timezone.now(), range_end)
+        if still_online_until > open_start:
+            intervals.append({'start': open_start, 'end': still_online_until})
+
+    return intervals
+
+
+def split_interval_by_local_day(start_dt, end_dt):
+    """Split [start_dt, end_dt) into per-local-calendar-day chunks."""
+    current = start_dt
+    while current < end_dt:
+        local_date = timezone.localtime(current).date()
+        next_local_midnight = timezone.make_aware(
+            datetime.combine(local_date + timedelta(days=1), datetime.min.time()),
+            timezone.get_current_timezone(),
+        )
+        chunk_end = min(end_dt, next_local_midnight)
+        if chunk_end > current:
+            yield local_date, current, chunk_end
+        current = chunk_end
 
 
 def is_laptop_asset(asset):
@@ -893,8 +708,9 @@ class SureMDMViewSet(ViewSet):
         asset_id = request.query_params.get('asset_id')
 
         limit = int(request.query_params.get('limit', 500))
+        client = get_client(connection)
         try:
-            devices = normalize_devices_with_groups(get_client(connection), limit=limit)
+            devices = normalize_devices_with_groups(client, limit=limit)
         except SureMDMError as exc:
             response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
             return Response({'detail': str(exc)}, status=response_status)
@@ -980,72 +796,63 @@ class SureMDMViewSet(ViewSet):
         if selected_employee and not selected_asset:
             devices = []
 
-        results = []
-        total_minutes = 0.0
+        range_start = timezone.make_aware(
+            datetime.combine(start_date, datetime.min.time()), timezone.get_current_timezone()
+        )
+        range_end = timezone.make_aware(
+            datetime.combine(end_date + timedelta(days=1), datetime.min.time()), timezone.get_current_timezone()
+        )
+
+        daily_sessions = {}
         for device in devices:
-            interval_events = extract_interval_events(device)
-            if interval_events:
-                for interval in interval_events:
-                    if interval['end'].date() < start_date or interval['start'].date() > end_date:
+            intervals = fetch_device_online_intervals(client, device['suremdm_device_id'], range_start, range_end)
+            for interval in intervals:
+                for day, chunk_start, chunk_end in split_interval_by_local_day(interval['start'], interval['end']):
+                    if day < start_date or day > end_date:
                         continue
-                    minutes = max((interval['end'] - interval['start']).total_seconds() / 60, 0)
-                    total_minutes += minutes
-                    results.append(
+                    minutes = (chunk_end - chunk_start).total_seconds() / 60
+                    key = (day, device['suremdm_device_id'])
+                    daily_sessions.setdefault(key, []).append(
                         {
-                            'date': interval['start'].date().isoformat(),
-                            'device_id': device['suremdm_device_id'],
-                            'suremdm_device_id': device['suremdm_device_id'],
-                            'asset_id': selected_asset['asset_id'] if selected_asset else '',
-                            'name': device['name'],
-                            'serial_number': device['serial_number'],
-                            'platform': device['platform'],
-                            'model': device['model'],
-                            'category': device['category'],
-                            'active_from': interval['start'].isoformat(),
-                            'logged_off_at': interval['end'].isoformat(),
-                            'active_minutes': round(minutes, 2),
-                            'active_hours': round(minutes / 60, 2),
-                            'activity_source': interval['status'] or 'event',
-                            'raw_activity_value': interval['status'] or '',
+                            'device': device,
+                            'active_from': chunk_start,
+                            'logged_off_at': chunk_end,
+                            'active_minutes': minutes,
                         }
                     )
-                continue
 
-            minutes, source_value = extract_active_minutes(device)
-            active_at = parse_device_timestamp(device.get('last_seen'))
-            if active_at is None:
-                active_at = timezone.now()
-            activity_date = active_at.date()
-            for day in build_date_range(start_date, end_date):
-                is_activity_date = day == activity_date
-                row_minutes = minutes if is_activity_date else 0.0
-                if is_activity_date:
-                    total_minutes += row_minutes
-                day_logged_off_at = active_at.replace(year=day.year, month=day.month, day=day.day) if active_at else None
-                day_active_from = (
-                    day_logged_off_at - timedelta(minutes=row_minutes)
-                    if day_logged_off_at and row_minutes > 0
-                    else ''
-                )
+        results = []
+        total_minutes = 0.0
+        for (day, device_id), sessions in daily_sessions.items():
+            sessions.sort(key=lambda session: session['active_from'])
+            day_minutes = sum(session['active_minutes'] for session in sessions)
+            for session in sessions:
+                device = session['device']
+                minutes = session['active_minutes']
+                total_minutes += minutes
                 results.append(
                     {
                         'date': day.isoformat(),
-                        'device_id': device['suremdm_device_id'],
-                        'suremdm_device_id': device['suremdm_device_id'],
+                        'device_id': device_id,
+                        'suremdm_device_id': device_id,
                         'asset_id': selected_asset['asset_id'] if selected_asset else '',
                         'name': device['name'],
                         'serial_number': device['serial_number'],
                         'platform': device['platform'],
                         'model': device['model'],
                         'category': device['category'],
-                        'active_from': day_active_from.isoformat() if day_active_from else '',
-                        'logged_off_at': day_logged_off_at.isoformat() if day_logged_off_at else '',
-                        'active_minutes': round(row_minutes, 2),
-                        'active_hours': round(row_minutes / 60, 2),
-                        'activity_source': 'api_field' if source_value else 'last_seen_only',
-                        'raw_activity_value': source_value,
+                        'active_from': session['active_from'].isoformat(),
+                        'logged_off_at': session['logged_off_at'].isoformat(),
+                        'active_minutes': round(minutes, 2),
+                        'active_hours': round(minutes / 60, 2),
+                        'day_active_minutes': round(day_minutes, 2),
+                        'day_active_hours': round(day_minutes / 60, 2),
+                        'activity_source': 'online_status_log',
+                        'raw_activity_value': '',
                     }
                 )
+
+        results.sort(key=lambda row: (row['date'], row['active_from']), reverse=True)
 
         if not results and selected_employee and selected_asset:
             results.append(
@@ -1063,6 +870,8 @@ class SureMDMViewSet(ViewSet):
                     'logged_off_at': '',
                     'active_minutes': 0.0,
                     'active_hours': 0.0,
+                    'day_active_minutes': 0.0,
+                    'day_active_hours': 0.0,
                     'activity_source': 'asset_lookup_only',
                     'raw_activity_value': '',
                 }
@@ -1080,6 +889,610 @@ class SureMDMViewSet(ViewSet):
             }
         )
 
+
+
+def get_teamviewer_connection():
+    return TeamViewerConnection.objects.order_by('-updated_at').first()
+
+
+def get_teamviewer_client(connection):
+    return TeamViewerClient(base_url=connection.base_url, api_token=connection.api_token)
+
+
+TEAMVIEWER_MANAGED_GROUPS_WARNING = (
+    'This token cannot see TeamViewer Managed Groups (Remote Management devices), so only classic '
+    'Computers & Contacts devices are listed. Grant it managed-group visibility in the TeamViewer '
+    'Management Console to include managed devices here.'
+)
+
+
+def normalize_teamviewer_device(device):
+    return {
+        'teamviewer_device_id': str(device.get('device_id') or ''),
+        'teamviewer_id': str(device.get('teamviewer_id') or device.get('remotecontrol_id') or ''),
+        'name': device.get('alias') or '',
+        'description': device.get('description') or '',
+        'group_id': str(device.get('groupid') or ''),
+        'online_state': device.get('online_state') or 'Unknown',
+        'assigned_to': bool(device.get('assigned_to')),
+        'last_seen': device.get('last_seen') or '',
+        'supported_features': device.get('supported_features') or '',
+        'source': 'classic' if device.get('remotecontrol_id') else 'managed',
+        'raw': device,
+    }
+
+
+class TeamViewerConnectionView(APIView):
+    permission_classes = [IsITSpecialistOrSuperAdmin]
+
+    def get(self, request):
+        connection = get_teamviewer_connection()
+        if not connection:
+            return Response({'configured': False})
+        data = TeamViewerConnectionSerializer(connection).data
+        data['configured'] = True
+        return Response(data)
+
+    def post(self, request):
+        connection = get_teamviewer_connection()
+        serializer = TeamViewerConnectionSerializer(
+            connection,
+            data=request.data,
+            partial=bool(connection),
+        )
+        serializer.is_valid(raise_exception=True)
+        connection = serializer.save()
+        data = TeamViewerConnectionSerializer(connection).data
+        data['configured'] = True
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class TeamViewerViewSet(ViewSet):
+    permission_classes = [IsITSpecialistOrSuperAdmin]
+
+    def _configured_connection(self):
+        connection = get_teamviewer_connection()
+        if not connection or not connection.is_active:
+            return None, Response(
+                {'detail': 'TeamViewer is not configured.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not connection.api_token:
+            return None, Response(
+                {'detail': 'TeamViewer API token is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return connection, None
+
+    @action(detail=False, methods=['post'], url_path='test')
+    def test(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+
+        try:
+            client = get_teamviewer_client(connection)
+            token_valid = client.ping()
+            connection.last_test_status = 'success' if token_valid else 'failed'
+            message = (
+                'Connected to TeamViewer successfully.'
+                if token_valid
+                else 'TeamViewer reported this token as invalid.'
+            )
+            if token_valid:
+                try:
+                    client.list_managed_groups()
+                except TeamViewerError:
+                    message = f'{message} {TEAMVIEWER_MANAGED_GROUPS_WARNING}'
+            connection.last_test_message = message
+            response_status = status.HTTP_200_OK if token_valid else status.HTTP_401_UNAUTHORIZED
+        except TeamViewerError as exc:
+            connection.last_test_status = 'failed'
+            connection.last_test_message = str(exc)
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+
+        connection.last_tested_at = timezone.now()
+        connection.save(update_fields=['last_tested_at', 'last_test_status', 'last_test_message', 'updated_at'])
+        return Response(
+            {'status': connection.last_test_status, 'message': connection.last_test_message},
+            status=response_status,
+        )
+
+    @action(detail=False, methods=['get'], url_path='devices')
+    def devices(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+        limit = int(request.query_params.get('limit', 200))
+        try:
+            raw_devices, managed_groups_error = get_teamviewer_client(connection).list_devices(limit=limit)
+        except TeamViewerError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+        devices = [normalize_teamviewer_device(device) for device in raw_devices]
+        payload = {'count': len(devices), 'results': devices}
+        if managed_groups_error:
+            payload['managed_groups_warning'] = TEAMVIEWER_MANAGED_GROUPS_WARNING
+        return Response(payload)
+
+    @action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+        try:
+            raw_devices, managed_groups_error = get_teamviewer_client(connection).list_devices()
+        except TeamViewerError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+        devices = [normalize_teamviewer_device(device) for device in raw_devices]
+
+        online_counts = {}
+        source_counts = {}
+        for device in devices:
+            state = device['online_state']
+            online_counts[state] = online_counts.get(state, 0) + 1
+            source_counts[device['source']] = source_counts.get(device['source'], 0) + 1
+
+        payload = {
+            'total_devices': len(devices),
+            'online_states': [
+                {'online_state': name, 'count': count}
+                for name, count in sorted(online_counts.items())
+            ],
+            'sources': [
+                {'source': name, 'count': count}
+                for name, count in sorted(source_counts.items())
+            ],
+        }
+        if managed_groups_error:
+            payload['managed_groups_warning'] = TEAMVIEWER_MANAGED_GROUPS_WARNING
+        return Response(payload)
+
+
+# Synthesia bills 2 credits per second of finished video (per Synthesia's
+# published credit-usage rate), and the API doesn't return a per-video
+# credit figure directly, so it's derived from `duration` on each video.
+SYNTHESIA_CREDITS_PER_SECOND = 2
+
+
+def get_synthesia_connection():
+    return SynthesiaConnection.objects.order_by('-updated_at').first()
+
+
+def get_synthesia_client(connection):
+    return SynthesiaClient(base_url=connection.base_url, api_key=connection.api_key)
+
+
+def format_synthesia_duration(seconds):
+    if seconds is None:
+        return ''
+    total_seconds = int(round(seconds))
+    minutes, secs = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f'{hours}:{minutes:02d}:{secs:02d}'
+    return f'{minutes}:{secs:02d}'
+
+
+def parse_synthesia_duration_seconds(value):
+    if value in (None, ''):
+        return None
+    text = str(value).strip()
+    parts = text.split(':')
+    try:
+        if len(parts) == 3:
+            hours, minutes, seconds = parts
+        elif len(parts) == 2:
+            hours, (minutes, seconds) = '0', parts
+        else:
+            return float(text)
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_synthesia_video(video):
+    duration_seconds = parse_synthesia_duration_seconds(video.get('duration'))
+
+    credits_used = round(duration_seconds * SYNTHESIA_CREDITS_PER_SECOND) if duration_seconds is not None else None
+
+    created_at = video.get('createdAt')
+    last_updated_at = video.get('lastUpdatedAt')
+
+    return {
+        'video_id': video.get('id'),
+        'title': video.get('title') or 'Untitled video',
+        'description': video.get('description') or '',
+        'status': video.get('status') or '',
+        'visibility': video.get('visibility') or '',
+        'duration_seconds': duration_seconds,
+        'duration_display': format_synthesia_duration(duration_seconds),
+        'credits_used': credits_used,
+        'created_at': datetime.fromtimestamp(created_at, tz=dt_timezone.utc).isoformat() if created_at else '',
+        'last_updated_at': datetime.fromtimestamp(last_updated_at, tz=dt_timezone.utc).isoformat() if last_updated_at else '',
+        'is_test': bool(video.get('test')),
+        'download_url': video.get('download') or '',
+        'thumbnail_url': (video.get('thumbnail') or {}).get('image') or '',
+        'raw': video,
+    }
+
+
+class SynthesiaConnectionView(APIView):
+    permission_classes = [IsITSpecialistOrSuperAdmin]
+
+    def get(self, request):
+        connection = get_synthesia_connection()
+        if not connection:
+            return Response({'configured': False})
+        data = SynthesiaConnectionSerializer(connection).data
+        data['configured'] = True
+        return Response(data)
+
+    def post(self, request):
+        connection = get_synthesia_connection()
+        serializer = SynthesiaConnectionSerializer(
+            connection,
+            data=request.data,
+            partial=bool(connection),
+        )
+        serializer.is_valid(raise_exception=True)
+        connection = serializer.save()
+        data = SynthesiaConnectionSerializer(connection).data
+        data['configured'] = True
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class SynthesiaViewSet(ViewSet):
+    permission_classes = [IsITSpecialistOrSuperAdmin]
+
+    def _configured_connection(self):
+        connection = get_synthesia_connection()
+        if not connection or not connection.is_active:
+            return None, Response(
+                {'detail': 'Synthesia is not configured.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not connection.api_key:
+            return None, Response(
+                {'detail': 'Synthesia API key is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return connection, None
+
+    @action(detail=False, methods=['post'], url_path='test')
+    def test(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+
+        try:
+            videos, _ = get_synthesia_client(connection).list_videos(limit=1)
+            connection.last_test_status = 'success'
+            connection.last_test_message = 'Connected to Synthesia successfully.'
+            response_status = status.HTTP_200_OK
+        except SynthesiaError as exc:
+            videos = []
+            connection.last_test_status = 'failed'
+            connection.last_test_message = str(exc)
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+
+        connection.last_tested_at = timezone.now()
+        connection.save(update_fields=['last_tested_at', 'last_test_status', 'last_test_message', 'updated_at'])
+        return Response(
+            {
+                'status': connection.last_test_status,
+                'message': connection.last_test_message,
+                'sample_video_count': len(videos),
+            },
+            status=response_status,
+        )
+
+    @action(detail=False, methods=['get'], url_path='videos')
+    def videos(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+        limit = int(request.query_params.get('limit', 500))
+        try:
+            videos = [
+                normalize_synthesia_video(video)
+                for video in get_synthesia_client(connection).list_all_videos(max_videos=limit)
+            ]
+        except SynthesiaError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+
+        connection.last_synced_at = timezone.now()
+        connection.save(update_fields=['last_synced_at', 'updated_at'])
+        return Response({'count': len(videos), 'results': videos})
+
+    @action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+        limit = int(request.query_params.get('limit', 500))
+        try:
+            videos = [
+                normalize_synthesia_video(video)
+                for video in get_synthesia_client(connection).list_all_videos(max_videos=limit)
+            ]
+        except SynthesiaError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+
+        published = [video for video in videos if video['status'] == 'complete']
+        total_credits = sum(video['credits_used'] or 0 for video in videos)
+        total_duration_seconds = sum(video['duration_seconds'] or 0 for video in videos)
+
+        status_counts = {}
+        for video in videos:
+            key = video['status'] or 'unknown'
+            status_counts[key] = status_counts.get(key, 0) + 1
+
+        # The current billing cycle's start isn't tracked separately - the
+        # most recent logged invoice's payment date is the actual ground
+        # truth for when the current plan period began.
+        latest_invoice = connection.invoices.order_by('-payment_date').first()
+        cycle_started_on = latest_invoice.payment_date if latest_invoice else None
+        # This is a floor, not the true figure: it only sums credits for
+        # videos visible through this API key, but Synthesia bills credits
+        # against a shared pool that also covers dubbing, personalization,
+        # and re-renders, none of which show up in the videos list. Use
+        # connection.credits_used_override (copied by hand from the
+        # Synthesia dashboard) as the real number whenever it's set.
+        estimated_credits_used_this_cycle = None
+        videos_edited_this_cycle = []
+        if cycle_started_on:
+            cycle_start_iso = cycle_started_on.isoformat()
+            estimated_credits_used_this_cycle = sum(
+                video['credits_used'] or 0
+                for video in videos
+                if video['created_at'] and video['created_at'][:10] >= cycle_start_iso
+            )
+            # Editing an existing video (e.g. re-rendering a changed scene)
+            # consumes credits again without touching createdAt, so it's
+            # invisible to the sum above. Surfacing these separately at
+            # least explains where some of the gap to the real dashboard
+            # figure is likely coming from, even though the exact partial-
+            # render cost isn't available without Synthesia's audit logs.
+            videos_edited_this_cycle = [
+                {
+                    'video_id': video['video_id'],
+                    'title': video['title'],
+                    'last_updated_at': video['last_updated_at'],
+                    'duration_display': video['duration_display'],
+                    'credits_used': video['credits_used'],
+                }
+                for video in videos
+                if video['last_updated_at']
+                and video['last_updated_at'][:10] >= cycle_start_iso
+                and not (video['created_at'] and video['created_at'][:10] >= cycle_start_iso)
+            ]
+
+        credits_used_this_cycle = (
+            connection.credits_used_override
+            if connection.credits_used_override is not None
+            else estimated_credits_used_this_cycle
+        )
+        credits_remaining = None
+        if connection.credit_allowance is not None and credits_used_this_cycle is not None:
+            credits_remaining = connection.credit_allowance - credits_used_this_cycle
+
+        return Response(
+            {
+                'total_videos': len(videos),
+                'published_videos': len(published),
+                'total_credits_used': total_credits,
+                'total_duration_seconds': round(total_duration_seconds, 2),
+                'total_duration_display': format_synthesia_duration(total_duration_seconds),
+                'status_counts': [
+                    {'status': name, 'count': count}
+                    for name, count in sorted(status_counts.items())
+                ],
+                'plan_name': connection.plan_name,
+                'billing_period': connection.billing_period,
+                'credit_allowance': connection.credit_allowance,
+                'billing_cycle_renews_on': connection.billing_cycle_renews_on,
+                'billing_cycle_started_on': cycle_started_on,
+                'credits_used_this_cycle': credits_used_this_cycle,
+                'credits_used_is_estimate': connection.credits_used_override is None,
+                'estimated_credits_used_this_cycle': estimated_credits_used_this_cycle,
+                'videos_edited_this_cycle': videos_edited_this_cycle,
+                'credits_used_override_at': connection.credits_used_override_at,
+                'credits_remaining': credits_remaining,
+            }
+        )
+
+
+class SynthesiaInvoiceViewSet(ModelViewSet):
+    permission_classes = [IsITSpecialistOrSuperAdmin]
+    serializer_class = SynthesiaInvoiceSerializer
+    queryset = SynthesiaInvoice.objects.all()
+
+    def get_queryset(self):
+        connection = get_synthesia_connection()
+        if not connection:
+            return SynthesiaInvoice.objects.none()
+        return SynthesiaInvoice.objects.filter(connection=connection)
+
+    def perform_create(self, serializer):
+        connection = get_synthesia_connection()
+        if not connection:
+            raise DRFValidationError('Synthesia is not configured.')
+        serializer.save(connection=connection)
+
+
+TRELLIX_ID_KEYS = ('deviceId', 'DeviceId', 'systemId', 'SystemId', 'id', 'ID')
+TRELLIX_NAME_KEYS = ('deviceName', 'DeviceName', 'systemName', 'SystemName', 'hostName', 'HostName', 'name', 'Name')
+TRELLIX_SERIAL_KEYS = ('serialNumber', 'SerialNumber', 'serial', 'Serial')
+TRELLIX_PLATFORM_KEYS = ('platform', 'Platform', 'osType', 'OSType', 'os', 'OS', 'operatingSystem')
+TRELLIX_OS_VERSION_KEYS = ('osVersion', 'OSVersion', 'version', 'Version')
+TRELLIX_IP_KEYS = ('ipAddress', 'IPAddress', 'ip', 'IP')
+TRELLIX_AGENT_VERSION_KEYS = ('agentVersion', 'AgentVersion', 'productVersion', 'ProductVersion')
+TRELLIX_LAST_COMM_KEYS = ('lastCommunication', 'LastCommunication', 'lastContact', 'LastContact', 'lastSeen', 'LastSeen')
+TRELLIX_THREAT_STATUS_KEYS = ('threatStatus', 'ThreatStatus', 'protectionStatus', 'ProtectionStatus', 'status', 'Status')
+
+TRELLIX_EVENT_ID_KEYS = ('eventId', 'EventId', 'id', 'ID')
+TRELLIX_THREAT_NAME_KEYS = ('threatName', 'ThreatName', 'malwareName', 'MalwareName', 'detectionName', 'DetectionName')
+TRELLIX_THREAT_TYPE_KEYS = ('threatType', 'ThreatType', 'category', 'Category')
+TRELLIX_SEVERITY_KEYS = ('severity', 'Severity', 'threatSeverity', 'ThreatSeverity')
+TRELLIX_ACTION_KEYS = ('actionTaken', 'ActionTaken', 'action', 'Action')
+TRELLIX_DETECTED_AT_KEYS = ('detectedAt', 'DetectedAt', 'eventTime', 'EventTime', 'timestamp', 'Timestamp')
+
+
+def get_trellix_connection():
+    return TrellixConnection.objects.order_by('-updated_at').first()
+
+
+def get_trellix_client(connection):
+    return TrellixClient(
+        base_url=connection.base_url,
+        auth_url=connection.auth_url,
+        client_id=connection.client_id,
+        client_secret=connection.client_secret,
+        api_key=connection.api_key,
+        tenant_id=connection.tenant_id,
+        scope=connection.scope,
+    )
+
+
+def normalize_trellix_device(device):
+    device_id = device_value(device, *TRELLIX_ID_KEYS)
+    return {
+        'trellix_device_id': str(device_id),
+        'name': device_value(device, *TRELLIX_NAME_KEYS),
+        'serial_number': device_value(device, *TRELLIX_SERIAL_KEYS),
+        'platform': device_value(device, *TRELLIX_PLATFORM_KEYS),
+        'os_version': device_value(device, *TRELLIX_OS_VERSION_KEYS),
+        'ip_address': device_value(device, *TRELLIX_IP_KEYS),
+        'agent_version': device_value(device, *TRELLIX_AGENT_VERSION_KEYS),
+        'last_communication': device_value(device, *TRELLIX_LAST_COMM_KEYS),
+        'threat_status': device_value(device, *TRELLIX_THREAT_STATUS_KEYS) or 'Unknown',
+        'raw': device,
+    }
+
+
+def normalize_trellix_threat_event(event):
+    return {
+        'event_id': str(device_value(event, *TRELLIX_EVENT_ID_KEYS)),
+        'device_name': device_value(event, *TRELLIX_NAME_KEYS),
+        'threat_name': device_value(event, *TRELLIX_THREAT_NAME_KEYS),
+        'threat_type': device_value(event, *TRELLIX_THREAT_TYPE_KEYS),
+        'severity': device_value(event, *TRELLIX_SEVERITY_KEYS),
+        'action_taken': device_value(event, *TRELLIX_ACTION_KEYS),
+        'detected_at': device_value(event, *TRELLIX_DETECTED_AT_KEYS),
+        'raw': event,
+    }
+
+
+class TrellixConnectionView(APIView):
+    permission_classes = [IsITSpecialistOrSuperAdmin]
+
+    def get(self, request):
+        connection = get_trellix_connection()
+        if not connection:
+            return Response({'configured': False})
+        data = TrellixConnectionSerializer(connection).data
+        data['configured'] = True
+        return Response(data)
+
+    def post(self, request):
+        connection = get_trellix_connection()
+        serializer = TrellixConnectionSerializer(
+            connection,
+            data=request.data,
+            partial=bool(connection),
+        )
+        serializer.is_valid(raise_exception=True)
+        connection = serializer.save()
+        data = TrellixConnectionSerializer(connection).data
+        data['configured'] = True
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class TrellixViewSet(ViewSet):
+    permission_classes = [IsITSpecialistOrSuperAdmin]
+
+    def _configured_connection(self):
+        connection = get_trellix_connection()
+        if not connection or not connection.is_active:
+            return None, Response(
+                {'detail': 'Trellix is not configured.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not connection.client_id or not connection.client_secret or not connection.api_key:
+            return None, Response(
+                {'detail': 'Trellix Client ID, Client Secret, and API key are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return connection, None
+
+    @action(detail=False, methods=['post'], url_path='test')
+    def test(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+
+        try:
+            devices = get_trellix_client(connection).list_devices(limit=1)
+            connection.last_test_status = 'success'
+            connection.last_test_message = 'Connected to Trellix successfully.'
+            response_status = status.HTTP_200_OK
+        except TrellixError as exc:
+            devices = []
+            connection.last_test_status = 'failed'
+            connection.last_test_message = str(exc)
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+
+        connection.last_tested_at = timezone.now()
+        connection.save(update_fields=['last_tested_at', 'last_test_status', 'last_test_message', 'updated_at'])
+        return Response(
+            {
+                'status': connection.last_test_status,
+                'message': connection.last_test_message,
+                'sample_device_count': len(devices),
+            },
+            status=response_status,
+        )
+
+    @action(detail=False, methods=['get'], url_path='devices')
+    def devices(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+        limit = int(request.query_params.get('limit', 50))
+        try:
+            devices = [
+                normalize_trellix_device(device)
+                for device in get_trellix_client(connection).list_devices(limit=limit)
+            ]
+        except TrellixError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+        return Response({'count': len(devices), 'results': devices})
+
+    @action(detail=False, methods=['get'], url_path='threats')
+    def threats(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+        limit = int(request.query_params.get('limit', 100))
+        from_date = request.query_params.get('start_date') or None
+        to_date = request.query_params.get('end_date') or None
+        try:
+            events = [
+                normalize_trellix_threat_event(event)
+                for event in get_trellix_client(connection).list_threat_events(
+                    limit=limit, from_date=from_date, to_date=to_date
+                )
+            ]
+        except TrellixError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+        return Response({'count': len(events), 'results': events})
+
     @action(detail=False, methods=['post'], url_path='sync-assets')
     def sync_assets(self, request):
         connection, error = self._configured_connection()
@@ -1087,42 +1500,43 @@ class SureMDMViewSet(ViewSet):
             return error
 
         try:
-            devices = normalize_devices_with_groups(get_client(connection), limit=500)
-        except SureMDMError as exc:
+            devices = [
+                normalize_trellix_device(device)
+                for device in get_trellix_client(connection).list_devices(limit=500)
+            ]
+        except TrellixError as exc:
             response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
             return Response({'detail': str(exc)}, status=response_status)
+
         asset_type, _ = AssetType.objects.get_or_create(
-            name='SureMDM Device',
-            defaults={'asset_type': 'hardware', 'description': 'Devices synced from SureMDM'},
+            name='Trellix Endpoint',
+            defaults={'asset_type': 'hardware', 'description': 'Endpoints synced from Trellix'},
         )
 
         created = 0
         updated = 0
         with transaction.atomic():
             for device in devices:
-                external_id = device['suremdm_device_id'] or device['serial_number'] or device['name']
+                external_id = device['trellix_device_id'] or device['serial_number'] or device['name']
                 if not external_id:
                     continue
 
-                asset_id = f'SUREMDM-{external_id}'
+                asset_id = f'TRELLIX-{external_id}'
                 defaults = {
                     'asset_type': asset_type,
                     'serial_number': device['serial_number'],
-                    'vendor': 'SureMDM',
+                    'vendor': 'Trellix',
                     'status': 'available',
                     'notes': device['name'],
                     'attribute_values': {
-                        'suremdm_device_id': device['suremdm_device_id'],
+                        'trellix_device_id': device['trellix_device_id'],
                         'device_name': device['name'],
-                        'system_tag': device['system_tag'],
                         'platform': device['platform'],
-                        'model': device['model'],
-                        'category': device['category'],
-                        'last_seen': device['last_seen'],
-                        'processor': device['processor'],
-                        'ram': device['ram'],
-                        'storage': device['storage'],
-                        'manufacturer': device['manufacturer'],
+                        'os_version': device['os_version'],
+                        'ip_address': device['ip_address'],
+                        'agent_version': device['agent_version'],
+                        'last_communication': device['last_communication'],
+                        'threat_status': device['threat_status'],
                     },
                 }
                 _, was_created = Asset.objects.update_or_create(asset_id=asset_id, defaults=defaults)

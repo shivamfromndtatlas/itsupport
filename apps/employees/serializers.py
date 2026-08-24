@@ -1,8 +1,9 @@
 from rest_framework import serializers
 
 from apps.organisations.models import Organisation
-from apps.inventory.serializers import AssetSerializer
-from apps.allocation.models import AssetAllocation
+from apps.inventory.serializers import AssetSerializer, SoftwareLicenseSerializer
+from apps.allocation.models import AssetAllocation, LicenseAllocation
+from . import alias_rules
 from .models import Employee
 
 CORE_PROCESS_MAP = dict(Employee.CORE_PROCESS_CHOICES)
@@ -61,6 +62,30 @@ class EmployeeAssetAllocationSerializer(serializers.ModelSerializer):
         ]
 
 
+class EmployeeLicenseAllocationSerializer(serializers.ModelSerializer):
+    license_detail = SoftwareLicenseSerializer(source='license', read_only=True)
+    assigned_by_name = serializers.CharField(source='assigned_by.full_name', read_only=True)
+    revoked_by_name = serializers.CharField(source='revoked_by.full_name', read_only=True)
+
+    class Meta:
+        model = LicenseAllocation
+        fields = [
+            'id',
+            'license',
+            'license_detail',
+            'assigned_date',
+            'revoked_date',
+            'status',
+            'notes',
+            'assigned_by',
+            'assigned_by_name',
+            'revoked_by',
+            'revoked_by_name',
+            'created_at',
+        ]
+        read_only_fields = fields
+
+
 class EmployeeSerializer(serializers.ModelSerializer):
     line_manager_detail = LineManagerSerializer(source='line_manager', read_only=True)
     core_process_name = serializers.CharField(read_only=True)
@@ -76,6 +101,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'employee_id',
             'full_name',
             'alias_name',
+            'client_email',
             'official_email',
             'contact_number',
             'core_process_code',
@@ -91,7 +117,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'core_process_name', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'client_email', 'core_process_name', 'created_at', 'updated_at']
         extra_kwargs = {
             'official_email': {'validators': []},
             'contact_number': {'required': False, 'allow_blank': True},
@@ -110,6 +136,28 @@ class EmployeeSerializer(serializers.ModelSerializer):
         if queryset.exists():
             raise serializers.ValidationError('An employee with this email already exists.')
         return value
+
+    def validate(self, attrs):
+        alias_name = attrs.get('alias_name', self.instance.alias_name if self.instance else '')
+        # An alias left untouched on an update doesn't need to be re-checked --
+        # plenty of existing employees have an alias that was typed in (or
+        # picked) before the initials-matching rule existed, and re-running
+        # the check on every unrelated edit would block saving their record
+        # forever. Only a newly-created or newly-changed alias gets checked.
+        alias_changed = not self.instance or alias_name != self.instance.alias_name
+        if (alias_name or '').strip() and alias_changed:
+            full_name = attrs.get('full_name', self.instance.full_name if self.instance else '')
+            try:
+                attrs['client_email'] = alias_rules.check_alias(
+                    full_name,
+                    alias_name,
+                    exclude_employee_id=self.instance.pk if self.instance else None,
+                )
+            except alias_rules.AliasError as exc:
+                raise serializers.ValidationError({'alias_name': str(exc)})
+        elif not (alias_name or '').strip() and 'alias_name' in attrs:
+            attrs['client_email'] = None
+        return attrs
 
     def create(self, validated_data):
         return super().create(self._set_core_process_name(validated_data))

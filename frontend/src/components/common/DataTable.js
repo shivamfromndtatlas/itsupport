@@ -193,7 +193,11 @@ function DataTable({
               borderTop: '1px solid #E2E8F0',
               backgroundColor: '#F8FAFC',
             },
-            '& .MuiDataGrid-columnSeparator': { display: 'none' },
+            '& .MuiDataGrid-columnSeparator': {
+              color: '#E2E8F0',
+              '&:hover': { color: '#6366F1' },
+            },
+            '& .MuiDataGrid-columnSeparator--resizing': { color: '#6366F1' },
             '& .MuiTablePagination-root': { fontSize: 13, color: '#64748B' },
             ...dataGridSx,
           }}

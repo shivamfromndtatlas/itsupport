@@ -34,6 +34,16 @@ function TabPanel({ value, index, children }) {
   return value === index ? <Box sx={{ pt: 2 }}>{children}</Box> : null;
 }
 
+function extractErrorMessage(err, fallback) {
+  const data = err.response?.data;
+  if (!data) return fallback;
+  if (data.detail) return data.detail;
+  const firstFieldError = Object.values(data).find((value) => value);
+  if (Array.isArray(firstFieldError)) return firstFieldError[0];
+  if (typeof firstFieldError === 'string') return firstFieldError;
+  return fallback;
+}
+
 const EMPTY_HW_FORM = {
   employee: '',
   asset: '',
@@ -43,7 +53,7 @@ const EMPTY_HW_FORM = {
 
 const EMPTY_SW_FORM = {
   employee: '',
-  software_license: '',
+  license: '',
   assigned_date: new Date().toISOString().split('T')[0],
 };
 
@@ -188,7 +198,7 @@ function AssetAllocation() {
       setQrDialog({ open: true, data: qrData, asset: asset?.asset_id || hwForm.asset });
       fetchAll();
     } catch (err) {
-      showSnack(err.response?.data?.detail || 'Assignment failed.', 'error');
+      showSnack(extractErrorMessage(err, 'Assignment failed.'), 'error');
     } finally {
       setSavingHw(false);
     }
@@ -227,7 +237,7 @@ function AssetAllocation() {
       setSwForm(EMPTY_SW_FORM);
       fetchAll();
     } catch (err) {
-      showSnack(err.response?.data?.detail || 'Assignment failed.', 'error');
+      showSnack(extractErrorMessage(err, 'Assignment failed.'), 'error');
     } finally {
       setSavingSw(false);
     }
@@ -625,12 +635,12 @@ function AssetAllocation() {
                 select
                 label="Software License"
                 fullWidth
-                value={swForm.software_license}
-                onChange={(e) => setSwForm({ ...swForm, software_license: e.target.value })}
+                value={swForm.license}
+                onChange={(e) => setSwForm({ ...swForm, license: e.target.value })}
               >
                 {availableLicenses.map((l) => (
                   <MenuItem key={l.id} value={l.id}>
-                    {l.software_name} ({l.available_seats ?? '?'} seats left)
+                    {l.software_name} ({l.is_unlimited ? 'unlimited seats' : `${l.available_seats ?? '?'} seats left`})
                   </MenuItem>
                 ))}
               </TextField>

@@ -31,6 +31,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import DataTable from '../../components/common/DataTable';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
 import EmployeeLink from '../../components/common/EmployeeLink';
+import AliasNameField from '../../components/common/AliasNameField';
 import api from '../../api/axios';
 import { useAuth } from '../../context/AuthContext';
 
@@ -461,7 +462,6 @@ function Employees() {
             {[
               { name: 'employee_id', label: 'Employee ID' },
               { name: 'full_name', label: 'Full Name' },
-              { name: 'alias_name', label: 'Alias Name' },
               { name: 'official_email', label: 'Email', type: 'email' },
               { name: 'contact_number', label: 'Contact Number' },
               { name: 'designation', label: 'Designation' },
@@ -478,6 +478,17 @@ function Employees() {
                 />
               </Grid>
             ))}
+
+            <Grid item xs={12} sm={4}>
+              <AliasNameField
+                fullName={form.full_name}
+                value={form.alias_name}
+                onChange={(newValue) => setForm({ ...form, alias_name: newValue })}
+                excludeEmployeeId={editRow?.id}
+                initialValue={editRow ? editRow.alias_name || '' : undefined}
+                initialClientEmail={editRow?.client_email}
+              />
+            </Grid>
 
             {/* Pulled out of the map so shrink + notched are explicit for native date input */}
             <Grid item xs={12} sm={4}>

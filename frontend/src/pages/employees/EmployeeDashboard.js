@@ -33,11 +33,19 @@ import WorkOutlineIcon from '@mui/icons-material/WorkOutlineOutlined';
 import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
 import BadgeIcon from '@mui/icons-material/Badge';
 import AssignmentReturnIcon from '@mui/icons-material/AssignmentReturn';
+import BlockIcon from '@mui/icons-material/Block';
+import ConfirmDialog from '../../components/common/ConfirmDialog';
 import api from '../../api/axios';
 import { useAuth } from '../../context/AuthContext';
 
 const STATUS_COLORS = { active: 'success', inactive: 'default', on_leave: 'warning' };
 const CONDITION_OPTIONS = ['Good', 'Ok', 'Fair', 'Poor'];
+const LICENSE_TYPE_LABELS = {
+  perpetual: 'Perpetual License',
+  subscription: 'Subscription License',
+  trial: 'Trial License',
+  open_source: 'Open Source License',
+};
 
 const EMPTY_VALUE = 'Not available';
 
@@ -89,6 +97,8 @@ function EmployeeDashboard() {
   const [recoverDialog, setRecoverDialog] = useState({ open: false, row: null });
   const [recoverCondition, setRecoverCondition] = useState('Good');
   const [recovering, setRecovering] = useState(false);
+  const [revokeLicenseDialog, setRevokeLicenseDialog] = useState({ open: false, row: null });
+  const [revokingLicense, setRevokingLicense] = useState(false);
 
   const loadEmployee = useCallback(async () => {
     setLoading(true);
@@ -112,7 +122,39 @@ function EmployeeDashboard() {
     const rows = employee?.assigned_assets || [];
     return rows.map((row) => ({ ...row, id: row.id || row.asset_detail?.id || row.asset?.id }));
   }, [employee]);
+  const assignedLicenses = useMemo(() => employee?.assigned_licenses || [], [employee]);
   const canRecoverAssets = hasRole('super_admin', 'it_specialist');
+  const canRevokeLicenses = hasRole('super_admin', 'it_specialist');
+
+  const combinedAllocationRows = useMemo(() => {
+    const assetRows = assignedAssets.map((row) => ({
+      key: `asset-${row.id}`,
+      kind: 'asset',
+      name: row.asset_detail?.asset_id || row.asset || EMPTY_VALUE,
+      typeLabel: row.asset_detail?.asset_type_name || EMPTY_VALUE,
+      identifier: row.asset_detail?.serial_number || EMPTY_VALUE,
+      assignedDate: row.assigned_date,
+      status: row.status,
+      assignedByName: row.assigned_by_name,
+      endDate: row.recovered_date,
+      notes: row.notes,
+      raw: row,
+    }));
+    const licenseRows = assignedLicenses.map((row) => ({
+      key: `license-${row.id}`,
+      kind: 'license',
+      name: row.license_detail?.software_name || EMPTY_VALUE,
+      typeLabel: LICENSE_TYPE_LABELS[row.license_detail?.license_type] || 'Software License',
+      identifier: row.license_detail?.license_key || EMPTY_VALUE,
+      assignedDate: row.assigned_date,
+      status: row.status,
+      assignedByName: row.assigned_by_name,
+      endDate: row.revoked_date,
+      notes: row.notes,
+      raw: row,
+    }));
+    return [...assetRows, ...licenseRows].sort((a, b) => (b.assignedDate || '').localeCompare(a.assignedDate || ''));
+  }, [assignedAssets, assignedLicenses]);
 
   const handleRecoverAsset = async () => {
     if (!recoverDialog.row?.id) return;
@@ -126,6 +168,20 @@ function EmployeeDashboard() {
       setError(err.response?.data?.detail || 'Unable to recover asset.');
     } finally {
       setRecovering(false);
+    }
+  };
+
+  const handleRevokeLicense = async () => {
+    if (!revokeLicenseDialog.row?.id) return;
+    setRevokingLicense(true);
+    try {
+      await api.post(`/allocation/licenses/${revokeLicenseDialog.row.id}/revoke/`);
+      setRevokeLicenseDialog({ open: false, row: null });
+      await loadEmployee();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Unable to revoke license.');
+    } finally {
+      setRevokingLicense(false);
     }
   };
 
@@ -283,7 +339,7 @@ function EmployeeDashboard() {
                   Assigned Assets
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Detailed asset allocation history for this employee.
+                  Detailed asset and software license allocation history for this employee.
                 </Typography>
               </Box>
               <Button variant="outlined" size="small" onClick={loadEmployee}>
@@ -292,33 +348,33 @@ function EmployeeDashboard() {
             </Stack>
             <Divider sx={{ mb: 2 }} />
 
-            {assignedAssets.length === 0 ? (
+            {combinedAllocationRows.length === 0 ? (
               <Box sx={{ py: 4, textAlign: 'center', color: 'text.secondary' }}>
-                No assets have been assigned to this employee yet.
+                No assets or software licenses have been assigned to this employee yet.
               </Box>
             ) : (
               <Box sx={{ width: '100%', overflowX: 'auto' }}>
                 <Table size="small">
                   <TableHead>
                     <TableRow>
-                      <TableCell>Asset</TableCell>
+                      <TableCell>Asset / License</TableCell>
                       <TableCell>Type</TableCell>
-                      <TableCell>Serial Number</TableCell>
+                      <TableCell>Serial / License Key</TableCell>
                       <TableCell>Assigned Date</TableCell>
                       <TableCell>Status</TableCell>
                       <TableCell>Assigned By</TableCell>
-                      <TableCell>Recovered Date</TableCell>
+                      <TableCell>End Date</TableCell>
                       <TableCell>Notes</TableCell>
                       <TableCell>Actions</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {assignedAssets.map((row) => (
-                      <TableRow key={row.id} hover>
-                        <TableCell>{row.asset_detail?.asset_id || row.asset || EMPTY_VALUE}</TableCell>
-                        <TableCell>{row.asset_detail?.asset_type_name || EMPTY_VALUE}</TableCell>
-                        <TableCell>{row.asset_detail?.serial_number || EMPTY_VALUE}</TableCell>
-                        <TableCell>{row.assigned_date || EMPTY_VALUE}</TableCell>
+                    {combinedAllocationRows.map((row) => (
+                      <TableRow key={row.key} hover>
+                        <TableCell>{row.name}</TableCell>
+                        <TableCell>{row.typeLabel}</TableCell>
+                        <TableCell>{row.identifier || EMPTY_VALUE}</TableCell>
+                        <TableCell>{row.assignedDate || EMPTY_VALUE}</TableCell>
                         <TableCell>
                           <Chip
                             label={(row.status || 'active').replace(/_/g, ' ')}
@@ -326,29 +382,37 @@ function EmployeeDashboard() {
                             color={STATUS_COLORS[row.status] || 'default'}
                           />
                         </TableCell>
-                        <TableCell>{row.assigned_by_name || EMPTY_VALUE}</TableCell>
-                        <TableCell>{row.recovered_date || EMPTY_VALUE}</TableCell>
+                        <TableCell>{row.assignedByName || EMPTY_VALUE}</TableCell>
+                        <TableCell>{row.endDate || EMPTY_VALUE}</TableCell>
                         <TableCell>{row.notes || EMPTY_VALUE}</TableCell>
                         <TableCell>
-                          {canRecoverAssets && row.status === 'active' ? (
+                          {row.kind === 'asset' && canRecoverAssets && row.status === 'active' ? (
                             <Tooltip title="Recover asset">
                               <IconButton
                                 size="small"
                                 color="warning"
                                 onClick={() => {
                                   setRecoverCondition(
-                                    row.asset_detail?.attribute_values_with_names?.condition
-                                    || row.asset_detail?.attribute_values?.condition
+                                    row.raw.asset_detail?.attribute_values_with_names?.condition
+                                    || row.raw.asset_detail?.attribute_values?.condition
                                     || 'Good'
                                   );
-                                  setRecoverDialog({ open: true, row });
+                                  setRecoverDialog({ open: true, row: row.raw });
                                 }}
                               >
                                 <AssignmentReturnIcon fontSize="small" />
                               </IconButton>
                             </Tooltip>
-                          ) : row.status !== 'active' ? (
-                            EMPTY_VALUE
+                          ) : row.kind === 'license' && canRevokeLicenses && row.status === 'active' ? (
+                            <Tooltip title="Revoke license">
+                              <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => setRevokeLicenseDialog({ open: true, row: row.raw })}
+                              >
+                                <BlockIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
                           ) : (
                             EMPTY_VALUE
                           )}
@@ -394,6 +458,16 @@ function EmployeeDashboard() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <ConfirmDialog
+        open={revokeLicenseDialog.open}
+        title="Revoke License"
+        message={`Revoke ${revokeLicenseDialog.row?.license_detail?.software_name || 'this'} software license from this employee?`}
+        onConfirm={handleRevokeLicense}
+        onCancel={() => setRevokeLicenseDialog({ open: false, row: null })}
+        confirmLabel={revokingLicense ? 'Revoking...' : 'Revoke'}
+        confirmColor="error"
+      />
     </Box>
   );
 }

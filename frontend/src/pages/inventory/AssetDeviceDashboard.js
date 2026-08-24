@@ -300,6 +300,14 @@ function AssetDeviceDashboard() {
               Installed Applications
             </Typography>
             <Chip label={appRows.length} size="small" />
+            {report?.installed_apps_source === 'suremdm_sync' && (
+              <Chip
+                label={`Synced from SureMDM${report?.installed_apps_synced_at ? ` • ${formatLastSeen(report.installed_apps_synced_at)}` : ''}`}
+                size="small"
+                color="success"
+                variant="outlined"
+              />
+            )}
             {report?.installed_apps_source === 'uploaded_report' && <Chip label="Uploaded report" size="small" color="primary" variant="outlined" />}
           </Stack>
           <Button
@@ -309,6 +317,7 @@ function AssetDeviceDashboard() {
             startIcon={<CloudUploadIcon />}
             disabled={uploading}
             sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}
+            title="Installed apps now sync automatically from SureMDM. Only use this to manually override a device's data."
           >
             {uploading ? 'Uploading...' : 'Upload Report'}
             <input hidden type="file" accept=".xlsx" onChange={handleReportUpload} />

@@ -1,12 +1,13 @@
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.users.permissions import IsHROrSuperAdmin
 
+from . import alias_rules
 from .models import Employee
-from .serializers import EmployeeAssetAllocationSerializer, EmployeeSerializer
+from .serializers import EmployeeAssetAllocationSerializer, EmployeeLicenseAllocationSerializer, EmployeeSerializer
 
 
 class EmployeeViewSet(viewsets.ModelViewSet):
@@ -33,6 +34,9 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                     'asset_allocations__asset__asset_type',
                     'asset_allocations__assigned_by',
                     'asset_allocations__recovered_by',
+                    'license_allocations__license',
+                    'license_allocations__assigned_by',
+                    'license_allocations__revoked_by',
                 )
             )
             if organisation_id:
@@ -49,7 +53,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             )
 
         return (
-            Employee.objects.filter(organisations__is_base=True)
+            Employee.objects.filter(organisations__is_base=True, status='active')
             .distinct()
             .select_related('line_manager')
             .prefetch_related('organisations')
@@ -59,6 +63,30 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         if self.action in ('create', 'update', 'partial_update', 'destroy'):
             return [IsHROrSuperAdmin()]
         return [IsAuthenticated()]
+
+    @action(detail=False, methods=['get'], url_path='alias-suggestions', url_name='alias-suggestions')
+    def alias_suggestions(self, request):
+        full_name = request.query_params.get('full_name', '')
+        if not full_name.strip():
+            return Response({'suggestions': []})
+        return Response({'suggestions': alias_rules.suggest_aliases(full_name)})
+
+    @action(detail=False, methods=['post'], url_path='validate-alias', url_name='validate-alias')
+    def validate_alias(self, request):
+        full_name = request.data.get('full_name', '')
+        alias_name = request.data.get('alias_name', '')
+        exclude_employee_id = request.data.get('exclude_employee_id')
+        exclude_profile_id = request.data.get('exclude_profile_id')
+        try:
+            client_email = alias_rules.check_alias(
+                full_name,
+                alias_name,
+                exclude_employee_id=exclude_employee_id,
+                exclude_profile_id=exclude_profile_id,
+            )
+        except alias_rules.AliasError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'client_email': client_email})
 
     @action(detail=True, methods=['get'], url_path='dashboard', url_name='dashboard')
     def dashboard(self, request, pk=None):
@@ -88,7 +116,11 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             profile_email = profile.official_email if profile and profile.official_email else ''
             profile_designation = profile.designation if profile and profile.designation else ''
             profile_joining_date = profile.date_of_joining if profile and profile.date_of_joining else None
-            email = employee.official_email if organisation.is_base else (profile_email or employee.official_email)
+            email = (
+                employee.official_email
+                if organisation.is_base
+                else (profile_email or employee.client_email or employee.official_email)
+            )
             card = {
                 'id': organisation.id,
                 'name': organisation.name,
@@ -108,6 +140,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 client_emails.append(card)
 
         asset_allocations = employee.asset_allocations.all().order_by('-assigned_date', '-created_at')
+        license_allocations = employee.license_allocations.all().order_by('-assigned_date', '-created_at')
 
         return Response(
             {
@@ -127,5 +160,6 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 'base_email': base_email,
                 'client_emails': client_emails,
                 'assigned_assets': EmployeeAssetAllocationSerializer(asset_allocations, many=True, context={'request': request}).data,
+                'assigned_licenses': EmployeeLicenseAllocationSerializer(license_allocations, many=True, context={'request': request}).data,
             }
         )

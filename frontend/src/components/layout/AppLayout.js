@@ -24,6 +24,7 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import PeopleIcon from '@mui/icons-material/People';
 import PersonAddIcon from '@mui/icons-material/PersonAdd';
+import BadgeIcon from '@mui/icons-material/Badge';
 import DevicesIcon from '@mui/icons-material/Devices';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
@@ -66,6 +67,7 @@ const NAV_SECTIONS = [
     items: [
       { label: 'Employees', icon: <PeopleIcon sx={{ fontSize: 20 }} />, path: '/employees', roles: ['super_admin', 'hr', 'it_specialist'] },
       { label: 'New Joiner Onboarding', icon: <PersonAddIcon sx={{ fontSize: 20 }} />, path: '/onboarding', roles: ['super_admin', 'hr', 'it_specialist'] },
+      { label: 'Alias Name Checker', icon: <BadgeIcon sx={{ fontSize: 20 }} />, path: '/alias-checker', roles: ['super_admin', 'hr', 'it_specialist'] },
     ],
   },
   {

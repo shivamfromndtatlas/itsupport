@@ -4,6 +4,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from apps.employees import alias_rules
 from apps.employees.models import Employee
 from apps.employees.serializers import CORE_PROCESS_MAP
 from apps.users.permissions import IsHROrSuperAdmin, IsITOrHROrSuperAdmin
@@ -72,6 +73,15 @@ class NewJoinerRequestViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        client_email = None
+        if (onboarding_request.alias_name or '').strip():
+            try:
+                client_email = alias_rules.check_alias(
+                    onboarding_request.full_name, onboarding_request.alias_name
+                )
+            except alias_rules.AliasError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
         # Update onboarding request
         onboarding_request.status = 'confirmed'
         onboarding_request.confirmed_by = request.user
@@ -83,6 +93,7 @@ class NewJoinerRequestViewSet(viewsets.ModelViewSet):
             employee_id=onboarding_request.employee_id,
             full_name=onboarding_request.full_name,
             alias_name=onboarding_request.alias_name,
+            client_email=client_email,
             official_email=onboarding_request.personal_email,
             contact_number=onboarding_request.contact_number,
             core_process_code=onboarding_request.core_process,

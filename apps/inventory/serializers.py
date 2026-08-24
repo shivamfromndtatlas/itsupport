@@ -160,12 +160,6 @@ class AssetSerializer(serializers.ModelSerializer):
         )
 
         attribute_values = obj.attribute_values or {}
-        if allocation and allocation.status == 'recovered':
-            condition_value = str(attribute_values.get('condition') or '').strip().lower()
-            if condition_value in {'good', 'ok', 'okay', 'fair'}:
-                return 'In Stock'
-            return 'Under Repair'
-
         raw_value = (
             attribute_values.get('Availability Status')
             or attribute_values.get('availability status')
@@ -173,6 +167,22 @@ class AssetSerializer(serializers.ModelSerializer):
             or ''
         )
         normalized = str(raw_value or '').strip().lower()
+
+        # A manual "Under Repair"/"Retired" flag means the asset is physically
+        # unavailable, so it wins even over an allocation record that hasn't
+        # been recovered yet.
+        if normalized in {'under repair', 'retired'}:
+            return raw_value
+
+        if allocation and allocation.status == 'active':
+            return 'Issued'
+
+        if allocation and allocation.status == 'recovered':
+            condition_value = str(attribute_values.get('condition') or '').strip().lower()
+            if condition_value in {'good', 'ok', 'okay', 'fair'}:
+                return 'In Stock'
+            return 'Under Repair'
+
         if normalized in {'in stock', 'issued', 'under repair', 'retired', 'reserved stock'}:
             return raw_value
 
@@ -269,13 +279,13 @@ class AssetCreateSerializer(serializers.Serializer):
 
 class SoftwareLicenseSerializer(serializers.ModelSerializer):
     used_seats = serializers.SerializerMethodField()
-    organisation_detail = serializers.SerializerMethodField()
+    organisation_details = serializers.SerializerMethodField()
 
     class Meta:
         model = SoftwareLicense
         fields = [
-            'id', 'software_name', 'organisation', 'organisation_detail', 'license_key', 'vendor',
-            'total_seats', 'available_seats', 'used_seats',
+            'id', 'software_name', 'organisations', 'organisation_details', 'license_key', 'vendor',
+            'is_unlimited', 'total_seats', 'available_seats', 'used_seats',
             'license_type', 'expiry_date', 'purchase_date', 'cost',
             'status', 'attribute_values', 'notes',
             'created_at', 'updated_at',
@@ -283,18 +293,20 @@ class SoftwareLicenseSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'available_seats', 'created_at', 'updated_at']
 
     def get_used_seats(self, obj):
+        if obj.is_unlimited:
+            return obj.allocations.filter(status='active').count()
         return obj.total_seats - obj.available_seats
 
-    def get_organisation_detail(self, obj):
-        organisation = obj.organisation
-        if not organisation:
-            return None
-        return {
-            'id': organisation.id,
-            'name': organisation.name,
-            'logo': organisation.logo.url if organisation.logo else '',
-            'is_base': organisation.is_base,
-        }
+    def get_organisation_details(self, obj):
+        return [
+            {
+                'id': organisation.id,
+                'name': organisation.name,
+                'logo': organisation.logo.url if organisation.logo else '',
+                'is_base': organisation.is_base,
+            }
+            for organisation in obj.organisations.all()
+        ]
 
     def create(self, validated_data):
         # Initialise available_seats to match total_seats on creation

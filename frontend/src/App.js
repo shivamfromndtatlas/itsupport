@@ -13,6 +13,7 @@ import UserManagement from './pages/users/UserManagement';
 import Employees from './pages/employees/Employees';
 import EmployeeDashboard from './pages/employees/EmployeeDashboard';
 import Onboarding from './pages/onboarding/Onboarding';
+import AliasNameChecker from './pages/onboarding/AliasNameChecker';
 import SOPManagement from './pages/sop/SOPManagement';
 import InventoryDashboard from './pages/inventory/InventoryDashboard';
 import Assets from './pages/inventory/Assets';
@@ -72,6 +73,16 @@ function App() {
             element={
               <RoleRoute roles={['super_admin', 'hr', 'it_specialist']}>
                 <Onboarding />
+              </RoleRoute>
+            }
+          />
+
+          {/* Alias Name Checker – super_admin, hr, it_specialist */}
+          <Route
+            path="/alias-checker"
+            element={
+              <RoleRoute roles={['super_admin', 'hr', 'it_specialist']}>
+                <AliasNameChecker />
               </RoleRoute>
             }
           />

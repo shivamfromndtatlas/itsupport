@@ -83,6 +83,7 @@ ASSET_UPLOAD_HEADER_ALIASES = {
     'notes': ('notes', 'remark', 'remarks'),
 }
 XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+AUTO_SYNC_FILE_NAME_PREFIX = 'SureMDM auto-sync'
 ASSET_STATUS_UPLOAD_ALIASES = {
     'available': 'available',
     'in stock': 'available',
@@ -886,13 +887,48 @@ class AssetViewSet(viewsets.ModelViewSet):
 
         top_5_types = sorted(assets_by_type_list, key=lambda x: x['count'], reverse=True)[:5]
 
+        # Count per organisation, so an "all organisations" view can show the
+        # split even though a single asset only ever belongs to one org.
+        assets_by_organisation = (
+            assets_qs.exclude(organisation__isnull=True)
+            .values('organisation__id', 'organisation__name')
+            .annotate(count=Count('id'))
+            .order_by('-count')
+        )
+        assets_by_organisation_list = [
+            {'id': row['organisation__id'], 'name': row['organisation__name'], 'count': row['count']}
+            for row in assets_by_organisation
+        ]
+
         # Software licence summary
         licenses_qs = SoftwareLicense.objects.all()
         if organisation_id:
-            licenses_qs = licenses_qs.filter(organisation_id=organisation_id)
-        total_seats = licenses_qs.aggregate(total=Sum('total_seats'))['total'] or 0
-        available_seats = licenses_qs.aggregate(avail=Sum('available_seats'))['avail'] or 0
+            licenses_qs = licenses_qs.filter(organisations__id=organisation_id).distinct()
+        # Unlimited licences have no seat cap, so they're excluded from the
+        # seat-count totals below and reported as a separate count instead.
+        limited_licenses_qs = licenses_qs.filter(is_unlimited=False)
+        total_seats = limited_licenses_qs.aggregate(total=Sum('total_seats'))['total'] or 0
+        available_seats = limited_licenses_qs.aggregate(avail=Sum('available_seats'))['avail'] or 0
         used_seats = total_seats - available_seats
+        unlimited_licenses = licenses_qs.filter(is_unlimited=True).count()
+
+        license_usage = [
+            {
+                'id': license_obj.id,
+                'software_name': license_obj.software_name,
+                'is_unlimited': license_obj.is_unlimited,
+                'total_seats': license_obj.total_seats,
+                'available_seats': license_obj.available_seats,
+                'used_seats': (
+                    license_obj.allocations.filter(status='active').count()
+                    if license_obj.is_unlimited
+                    else license_obj.total_seats - license_obj.available_seats
+                ),
+                'status': license_obj.status,
+                'organisations': [org.name for org in license_obj.organisations.all()],
+            }
+            for license_obj in licenses_qs.prefetch_related('organisations', 'allocations').order_by('software_name')
+        ]
 
         return Response(
             {
@@ -900,12 +936,15 @@ class AssetViewSet(viewsets.ModelViewSet):
                 'status_counts': status_counts,
                 'assets_by_type': assets_by_type_list,
                 'top_5_asset_types': top_5_types,
+                'assets_by_organisation': assets_by_organisation_list,
                 'software_licenses': {
                     'total_licenses': licenses_qs.count(),
                     'total_seats': total_seats,
                     'used_seats': used_seats,
                     'available_seats': available_seats,
+                    'unlimited_licenses': unlimited_licenses,
                 },
+                'license_usage': license_usage,
             }
         )
 
@@ -1041,7 +1080,12 @@ class AssetViewSet(viewsets.ModelViewSet):
             )
             if imported_apps:
                 installed_apps = [normalize_imported_app(app) for app in imported_apps]
-                installed_apps_source = 'uploaded_report'
+                latest_source_name = installed_apps[0]['source']
+                installed_apps_source = (
+                    'suremdm_sync'
+                    if latest_source_name.startswith(AUTO_SYNC_FILE_NAME_PREFIX)
+                    else 'uploaded_report'
+                )
                 mdm_error = ''
 
         from apps.allocation.models import AssetAllocation
@@ -1053,6 +1097,9 @@ class AssetViewSet(viewsets.ModelViewSet):
             'recovered_by',
         ).order_by('-assigned_date', '-created_at')
         assigned_user_name = active_allocation.employee.full_name if active_allocation else None
+        installed_apps_synced_at = (
+            installed_apps[0].get('imported_at') if installed_apps_source == 'suremdm_sync' and installed_apps else None
+        )
 
         return Response(
             {
@@ -1079,6 +1126,7 @@ class AssetViewSet(viewsets.ModelViewSet):
                 'installed_apps': installed_apps,
                 'installed_apps_source': installed_apps_source,
                 'installed_apps_error': mdm_error,
+                'installed_apps_synced_at': installed_apps_synced_at,
             }
         )
 
@@ -1125,7 +1173,7 @@ class SoftwareLicenseViewSet(viewsets.ModelViewSet):
         queryset = super().get_queryset()
         organisation_id = self.request.query_params.get('organisation_id')
         if organisation_id:
-            queryset = queryset.filter(organisation_id=organisation_id)
+            queryset = queryset.filter(organisations__id=organisation_id).distinct()
         return queryset
 
     def get_permissions(self):

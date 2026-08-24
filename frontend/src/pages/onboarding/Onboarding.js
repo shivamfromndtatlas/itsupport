@@ -45,7 +45,6 @@ const EMPTY_FORM = {
   employee_id: '',
   email: '',
   contact_number: '',
-  department: '',
   designation: '',
   date_of_joining: '',
   core_process: '',
@@ -151,7 +150,7 @@ function Onboarding() {
     { field: 'full_name', headerName: 'Name', flex: 1, minWidth: 150 },
     { field: 'employee_id', headerName: 'Employee ID', width: 130 },
     { field: 'date_of_joining', headerName: 'DOJ', width: 120 },
-    { field: 'department', headerName: 'Department', flex: 1 },
+    { field: 'core_process', headerName: 'Core Process', flex: 1 },
     {
       field: 'status',
       headerName: 'Status',
@@ -240,7 +239,6 @@ function Onboarding() {
                   { name: 'employee_id', label: 'Employee ID' },
                   { name: 'email', label: 'Email', type: 'email' },
                   { name: 'contact_number', label: 'Contact Number' },
-                  { name: 'department', label: 'Department' },
                   { name: 'designation', label: 'Designation' },
                   { name: 'reporting_manager', label: 'Reporting Manager' },
                 ].map((field) => (

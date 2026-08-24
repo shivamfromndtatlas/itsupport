@@ -64,6 +64,6 @@ class LicenseAllocation(models.Model):
 
     def clean(self):
         super().clean()
-        license_org_id = getattr(self.license, 'organisation_id', None)
-        if license_org_id and not self.employee.organisations.filter(id=license_org_id).exists():
-            raise ValidationError('This employee does not belong to the licence organisation.')
+        license_org_ids = set(self.license.organisations.values_list('id', flat=True))
+        if license_org_ids and not self.employee.organisations.filter(id__in=license_org_ids).exists():
+            raise ValidationError('This employee does not belong to any of the licence organisations.')

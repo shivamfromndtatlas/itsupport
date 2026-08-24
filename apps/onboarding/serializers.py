@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.employees import alias_rules
+
 from .models import NewJoinerRequest
 
 
@@ -50,3 +52,13 @@ class NewJoinerRequestSerializer(serializers.ModelSerializer):
             'line_manager': {'required': False, 'allow_blank': True},
             'core_process': {'required': False, 'allow_blank': True},
         }
+
+    def validate(self, attrs):
+        alias_name = attrs.get('alias_name', self.instance.alias_name if self.instance else '')
+        if (alias_name or '').strip():
+            full_name = attrs.get('full_name', self.instance.full_name if self.instance else '')
+            try:
+                alias_rules.check_alias(full_name, alias_name)
+            except alias_rules.AliasError as exc:
+                raise serializers.ValidationError({'alias_name': str(exc)})
+        return attrs

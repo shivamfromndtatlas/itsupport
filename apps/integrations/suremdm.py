@@ -108,6 +108,43 @@ class SureMDMClient:
             return data
         return []
 
+    def device_log(self, device_id, from_date, to_date, log_type='1'):
+        """
+        Fetch a device's activity log (online/offline transitions, device
+        info updates, etc.) for the given UTC window.
+
+        from_date / to_date must be strings in the format the console's own
+        "Device Activity" tab sends, e.g. '2026-07-10T08:59:00.000Z'.
+        """
+        if not device_id:
+            return []
+
+        payload = {
+            'FromDate': from_date,
+            'ToDate': to_date,
+            'DeviceId': device_id,
+            'LogType': log_type,
+        }
+        _, data = self.post('devicelog/', payload)
+        return data if isinstance(data, list) else []
+
+    def trigger_apps_refresh(self, device_id):
+        """
+        Ask a device to report its installed-application list back to
+        SureMDM (documented as the "GET_DEVICE_APPS" dynamic job in
+        SureMDM's REST API sample code). This is fire-and-forget: the
+        device must be online to receive the job and it reports back on
+        its own schedule, so the refreshed app list only becomes visible
+        via the device list/detail endpoints sometime after this call
+        returns, not synchronously.
+        """
+        if not device_id:
+            return False
+
+        payload = {'JobType': 'GET_DEVICE_APPS', 'DeviceID': str(device_id)}
+        self.post('dynamicjob', payload)
+        return True
+
     def installed_apps(self, device_id):
         """
         Fetch installed applications for a device.

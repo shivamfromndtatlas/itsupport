@@ -171,15 +171,14 @@ class SoftwareLicense(models.Model):
     ]
 
     software_name = models.CharField(max_length=200)
-    organisation = models.ForeignKey(
+    organisations = models.ManyToManyField(
         'organisations.Organisation',
-        on_delete=models.SET_NULL,
-        null=True,
         blank=True,
         related_name='software_licenses',
     )
     license_key = models.CharField(max_length=500, blank=True)
     vendor = models.CharField(max_length=200, blank=True)
+    is_unlimited = models.BooleanField(default=False)
     total_seats = models.PositiveIntegerField(default=1)
     available_seats = models.PositiveIntegerField(default=1)
     expiry_date = models.DateField(null=True, blank=True)
@@ -197,6 +196,8 @@ class SoftwareLicense(models.Model):
         ordering = ['software_name']
 
     def __str__(self):
+        if self.is_unlimited:
+            return f'{self.software_name} (unlimited seats)'
         return f'{self.software_name} ({self.available_seats}/{self.total_seats} seats)'
 
 
