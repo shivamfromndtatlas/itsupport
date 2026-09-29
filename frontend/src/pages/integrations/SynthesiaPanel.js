@@ -182,6 +182,7 @@ function SynthesiaPanel() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [syncingCredits, setSyncingCredits] = useState(false);
   const [message, setMessage] = useState(null);
   const [selectedStatus, setSelectedStatus] = useState('all');
   const [videoSearch, setVideoSearch] = useState('');
@@ -366,6 +367,27 @@ function SynthesiaPanel() {
     await loadConnection();
     await loadVideos();
     await loadSummary();
+  };
+
+  const handleSyncCredits = async () => {
+    setSyncingCredits(true);
+    try {
+      const res = await api.post('/integrations/synthesia/sync-credits/');
+      await loadConnection();
+      await loadSummary();
+      if (res.data?.has_invoice_anchor === false) {
+        showMessage(
+          'warning',
+          'Log a Synthesia invoice first — it sets the billing-cycle start the estimate is measured from.'
+        );
+      } else {
+        showMessage('success', 'Synthesia credit estimate refreshed.');
+      }
+    } catch (err) {
+      showMessage('error', err.response?.data?.detail || 'Failed to refresh Synthesia credits.');
+    } finally {
+      setSyncingCredits(false);
+    }
   };
 
   const columns = [
@@ -630,15 +652,40 @@ function SynthesiaPanel() {
                   InputLabelProps={{ shrink: true }}
                   fullWidth
                 />
+                <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+                    <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                      Credits Used This Cycle (auto-synced)
+                    </Typography>
+                    <Button
+                      size="small"
+                      startIcon={syncingCredits ? <CircularProgress size={14} /> : <RefreshIcon />}
+                      onClick={handleSyncCredits}
+                      disabled={syncingCredits || !connection || hasUnsavedSecret}
+                    >
+                      Sync now
+                    </Button>
+                  </Stack>
+                  <Typography variant="h6" fontWeight={800} sx={{ mt: 0.5 }}>
+                    {connection?.credits_used_estimated != null
+                      ? `~${Number(connection.credits_used_estimated).toLocaleString()}`
+                      : '—'}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {connection?.credits_used_synced_at
+                      ? `Last synced ${formatDateTime(connection.credits_used_synced_at)}. Estimated from video durations (2 credits/sec) for videos created since the current billing cycle began — a floor that excludes dubbing, personalization, and partial re-renders, which Synthesia's API doesn't expose on this plan.`
+                      : 'Estimated automatically from video durations once a Synthesia invoice is logged (that sets the billing-cycle start). Refreshes on a schedule; use "Sync now" to update immediately.'}
+                  </Typography>
+                </Box>
                 <TextField
-                  label="Credits Used (from Synthesia dashboard)"
+                  label="Exact Credits Used (optional override)"
                   type="number"
                   value={form.credits_used_override}
                   onChange={(e) => setForm({ ...form, credits_used_override: e.target.value })}
                   helperText={
                     connection?.credits_used_override_at
-                      ? `As of ${formatDateTime(connection.credits_used_override_at)}. Real-time credit consumption requires Synthesia's Enterprise-only audit logs, so copy this from the "Usage" panel on your Synthesia dashboard.`
-                      : 'Real-time credit consumption requires Synthesia\'s Enterprise-only audit logs. Copy this number from the "Usage" panel on your Synthesia dashboard.'
+                      ? `Overriding the auto estimate. Set ${formatDateTime(connection.credits_used_override_at)} from the "Usage" panel on the Synthesia dashboard. Clear this field to fall back to the auto estimate.`
+                      : 'Leave blank to use the auto-synced estimate above. Enter the exact figure from the Synthesia dashboard "Usage" panel only when you need a pinpoint number.'
                   }
                   fullWidth
                 />
@@ -777,7 +824,8 @@ function SynthesiaPanel() {
                       </>
                     ) : (
                       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                        Enter "Credits Used" from your Synthesia dashboard to track usage against this plan.
+                        Log a Synthesia invoice to set the billing-cycle start — credits used are then
+                        estimated automatically from video activity.
                       </Typography>
                     )}
                   </Paper>

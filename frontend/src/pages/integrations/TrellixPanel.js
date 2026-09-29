@@ -39,7 +39,7 @@ const EMPTY_FORM = {
   client_id: '',
   client_secret: '',
   api_key: '',
-  scope: 'epo.device.r',
+  scope: 'epo.device.r epo.evt.r',
   is_active: true,
 };
 
@@ -51,7 +51,10 @@ const SUMMARY_FIELDS = [
   ['OS Version', 'os_version'],
   ['IP Address', 'ip_address'],
   ['Agent Version', 'agent_version'],
-  ['Threat Status', 'threat_status'],
+  ['Agent Status', 'managed_status'],
+  ['Model', 'model'],
+  ['Manufacturer', 'manufacturer'],
+  ['Logged-in User', 'user_name'],
   ['Last Communication', 'last_communication'],
 ];
 
@@ -244,6 +247,12 @@ function TrellixPanel() {
     await loadThreats();
   };
 
+  const handleDeviceClick = (deviceName) => {
+    const name = String(deviceName || '').toLowerCase();
+    const matchedDevice = devices.find((device) => String(device.name || '').toLowerCase() === name);
+    setSelectedDevice(matchedDevice || { name: deviceName });
+  };
+
   const columns = [
     {
       field: 'name',
@@ -274,15 +283,15 @@ function TrellixPanel() {
     { field: 'serial_number', headerName: 'Serial Number', flex: 1, minWidth: 160 },
     { field: 'platform', headerName: 'Platform', flex: 1, minWidth: 130 },
     {
-      field: 'threat_status',
-      headerName: 'Threat Status',
+      field: 'managed_status',
+      headerName: 'Agent Status',
       flex: 1,
       minWidth: 150,
       renderCell: ({ value }) => (
         <Chip
           size="small"
           label={value || 'Unknown'}
-          color={String(value).toLowerCase().includes('protect') ? 'success' : 'default'}
+          color={value === 'Managed' ? 'success' : 'default'}
           variant="outlined"
         />
       ),
@@ -291,7 +300,32 @@ function TrellixPanel() {
   ];
 
   const threatColumns = [
-    { field: 'device_name', headerName: 'Device', flex: 1, minWidth: 150 },
+    {
+      field: 'device_name',
+      headerName: 'Device',
+      flex: 1,
+      minWidth: 150,
+      renderCell: ({ value }) => (
+        <Button
+          variant="text"
+          size="small"
+          onClick={() => handleDeviceClick(value)}
+          sx={{
+            justifyContent: 'flex-start',
+            minWidth: 0,
+            p: 0,
+            color: 'text.primary',
+            fontWeight: 700,
+            textTransform: 'none',
+            '&:hover': { color: 'primary.main', backgroundColor: 'transparent' },
+          }}
+        >
+          <Typography variant="body2" noWrap fontWeight={700}>
+            {value || 'Unknown device'}
+          </Typography>
+        </Button>
+      ),
+    },
     { field: 'threat_name', headerName: 'Threat', flex: 1, minWidth: 170 },
     { field: 'threat_type', headerName: 'Type', flex: 0.8, minWidth: 120 },
     {
@@ -317,7 +351,7 @@ function TrellixPanel() {
       const matchesPlatform = selectedPlatform === 'all' || device.platform === selectedPlatform;
       const matchesSearch =
         !query ||
-        [device.name, device.serial_number, device.platform, device.threat_status]
+        [device.name, device.serial_number, device.platform, device.managed_status]
           .filter(Boolean)
           .some((value) => String(value).toLowerCase().includes(query));
 
@@ -327,6 +361,20 @@ function TrellixPanel() {
 
   const hasActiveFilters = selectedPlatform !== 'all' || deviceSearch.trim();
   const selectedDeviceRows = useMemo(() => buildRawRows(selectedDevice), [selectedDevice]);
+  const deviceThreatEvents = useMemo(() => {
+    const name = String(selectedDevice?.name || '').toLowerCase();
+    if (!name) return [];
+    return threats.filter((event) => String(event.device_name || '').toLowerCase() === name);
+  }, [selectedDevice, threats]);
+  const deviceSeverityCounts = useMemo(() => {
+    const counts = {};
+    deviceThreatEvents.forEach((event) => {
+      const key = event.severity || 'Unknown';
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    return Object.entries(counts).sort(([a], [b]) => a.localeCompare(b));
+  }, [deviceThreatEvents]);
+  const deviceEventColumns = threatColumns.filter((col) => col.field !== 'device_name');
   const resetFilters = () => {
     setSelectedPlatform('all');
     setDeviceSearch('');
@@ -395,7 +443,7 @@ function TrellixPanel() {
                   label="OAuth Scope"
                   value={form.scope}
                   onChange={(e) => setForm({ ...form, scope: e.target.value })}
-                  helperText="Space-separated scopes the token should carry, e.g. epo.device.r. Add more (epo.grps.r, epo.tags.r, ...) if you use related-resource routes."
+                  helperText="Space-separated scopes the token should carry. epo.device.r for endpoint inventory, epo.evt.r for threat events. Add more (epo.grps.r, epo.tags.r, ...) if you use related-resource routes."
                   fullWidth
                 />
                 <TextField
@@ -549,6 +597,7 @@ function TrellixPanel() {
                   rows={threats}
                   columns={threatColumns}
                   autoHeight
+                  onRowClick={({ row }) => handleDeviceClick(row.device_name)}
                   pageSizeOptions={[10, 25]}
                   initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
                   sx={{
@@ -556,7 +605,8 @@ function TrellixPanel() {
                     minWidth: 700,
                     fontSize: 13.5,
                     '& .MuiDataGrid-columnHeaders': { backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' },
-                    '& .MuiDataGrid-row': { cursor: 'default' },
+                    '& .MuiDataGrid-row': { cursor: 'pointer' },
+                    '& .MuiDataGrid-row:hover': { backgroundColor: '#F8FAFC' },
                   }}
                 />
               </Box>
@@ -580,12 +630,18 @@ function TrellixPanel() {
                 {selectedDevice?.name || selectedDevice?.serial_number || 'Trellix Endpoint'}
               </Typography>
               <Typography variant="body2" color="text.secondary" noWrap>
-                {selectedDevice?.platform || 'Platform unavailable'} - {selectedDevice?.threat_status || 'Unknown status'}
+                {selectedDevice?.platform || 'Platform unavailable'} - {selectedDevice?.managed_status || 'Unknown status'}
               </Typography>
             </Box>
           </Stack>
         </DialogTitle>
         <DialogContent dividers>
+          {!selectedDevice?.trellix_device_id && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              No matching entry in Trellix Endpoints for this device name — showing event history only.
+            </Alert>
+          )}
+
           <Grid container spacing={2} sx={{ mb: 3 }}>
             {SUMMARY_FIELDS.map(([label, key]) => (
               <Grid item xs={12} sm={6} md={4} key={key}>
@@ -600,6 +656,65 @@ function TrellixPanel() {
               </Grid>
             ))}
           </Grid>
+
+          <Divider sx={{ mb: 2 }} />
+          <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
+            <SecurityIcon color="primary" fontSize="small" />
+            <Typography variant="subtitle1" fontWeight={800}>
+              Security Summary
+            </Typography>
+          </Stack>
+          <Grid container spacing={2} sx={{ mb: 2 }}>
+            <Grid item xs={12} sm={4} md={3}>
+              <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1, height: '100%' }}>
+                <Typography variant="caption" color="text.secondary">
+                  Total events
+                </Typography>
+                <Typography variant="h5" fontWeight={800}>
+                  {deviceThreatEvents.length}
+                </Typography>
+              </Paper>
+            </Grid>
+            <Grid item xs={12} sm={8} md={9}>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ height: '100%', alignItems: 'center' }}>
+                {deviceSeverityCounts.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    No threat events recorded for this device.
+                  </Typography>
+                ) : (
+                  deviceSeverityCounts.map(([severity, count]) => (
+                    <Chip
+                      key={severity}
+                      size="small"
+                      label={`Severity ${severity}: ${count}`}
+                      color={threatSeverityColor(severity)}
+                      variant="outlined"
+                    />
+                  ))
+                )}
+              </Stack>
+            </Grid>
+          </Grid>
+
+          {deviceThreatEvents.length > 0 && (
+            <Box sx={{ mb: 3, overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+              <DataGrid
+                rows={deviceThreatEvents}
+                columns={deviceEventColumns}
+                autoHeight
+                density="compact"
+                pageSizeOptions={[5, 10]}
+                initialState={{ pagination: { paginationModel: { pageSize: 5 } } }}
+                sx={{
+                  border: 'none',
+                  minWidth: 500,
+                  fontSize: 13,
+                  '& .MuiDataGrid-columnHeaders': { backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' },
+                  '& .MuiDataGrid-row': { cursor: 'default' },
+                }}
+              />
+            </Box>
+          )}
 
           <Divider sx={{ mb: 2 }} />
           <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1.5 }}>

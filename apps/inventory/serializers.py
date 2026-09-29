@@ -2,7 +2,14 @@ from rest_framework import serializers
 
 from apps.organisations.models import Organisation
 
-from .models import Asset, AssetAttribute, AssetType, AssetTypeAttributeRequirement, SoftwareLicense
+from .models import (
+    Asset,
+    AssetAttribute,
+    AssetSupportInfo,
+    AssetType,
+    AssetTypeAttributeRequirement,
+    SoftwareLicense,
+)
 
 
 class AssetTypeSerializer(serializers.ModelSerializer):
@@ -193,6 +200,24 @@ class AssetSerializer(serializers.ModelSerializer):
         if obj.status == 'retired':
             return 'Retired'
         return 'Reserved Stock'
+
+
+class AssetSupportInfoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AssetSupportInfo
+        fields = [
+            'manufacturer',
+            'service_tag',
+            'product_name',
+            'ship_date',
+            'warranty',
+            'product_specifications',
+            'source_url',
+            'fetch_status',
+            'fetch_error',
+            'fetched_at',
+        ]
+        read_only_fields = fields
 
 
 class AssetCreateSerializer(serializers.Serializer):

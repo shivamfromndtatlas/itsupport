@@ -9,6 +9,7 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
+from apps.inventory.models import Asset, SoftwareLicense
 from apps.users.permissions import IsITSpecialistOrSuperAdmin
 
 from .models import AssetAllocation, LicenseAllocation
@@ -168,13 +169,22 @@ class LicenseAllocationViewSet(viewsets.ModelViewSet):
     queryset = LicenseAllocation.objects.select_related(
         'license',
         'employee',
+        'asset',
+        'asset__asset_type',
         'assigned_by',
         'revoked_by',
     ).all()
     serializer_class = LicenseAllocationSerializer
 
     def get_permissions(self):
-        if self.action in ('create', 'update', 'partial_update', 'destroy', 'revoke'):
+        if self.action in (
+            'create',
+            'update',
+            'partial_update',
+            'destroy',
+            'revoke',
+            'assign_devices',
+        ):
             return [IsITSpecialistOrSuperAdmin()]
         return [IsAuthenticated()]
 
@@ -192,6 +202,102 @@ class LicenseAllocationViewSet(viewsets.ModelViewSet):
             # Decrement available seats
             license_obj.available_seats -= 1
             license_obj.save(update_fields=['available_seats'])
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            allocation = serializer.save()
+            allocation.full_clean()
+            allocation.save()
+
+    @action(detail=False, methods=['post'], url_path='assign-devices')
+    def assign_devices(self, request):
+        """
+        Assign a single licence to one or more hardware assets (laptops/devices)
+        in one call, without linking to any employee.
+        Body: { license, asset_ids: [...], assigned_date, notes? }
+        """
+        from rest_framework.exceptions import ValidationError
+
+        license_id = request.data.get('license')
+        asset_ids = request.data.get('asset_ids') or []
+        assigned_date = request.data.get('assigned_date')
+        notes = request.data.get('notes', '') or ''
+
+        if not license_id:
+            raise ValidationError({'license': 'This field is required.'})
+        if not isinstance(asset_ids, (list, tuple)) or not asset_ids:
+            raise ValidationError({'asset_ids': 'Select at least one asset.'})
+        if not assigned_date:
+            raise ValidationError({'assigned_date': 'This field is required.'})
+
+        try:
+            license_obj = SoftwareLicense.objects.get(pk=license_id)
+        except (SoftwareLicense.DoesNotExist, ValueError, TypeError):
+            raise ValidationError({'license': 'Invalid licence.'})
+
+        wanted_ids = list(dict.fromkeys(str(a) for a in asset_ids))
+        assets = list(Asset.objects.filter(pk__in=wanted_ids))
+        found_ids = {str(a.pk) for a in assets}
+        missing = [a for a in wanted_ids if a not in found_ids]
+        if missing:
+            raise ValidationError({'asset_ids': f'Unknown asset(s): {", ".join(missing)}.'})
+
+        already_ids = set(
+            LicenseAllocation.objects.filter(
+                license=license_obj, asset__in=assets, status='active'
+            ).values_list('asset_id', flat=True)
+        )
+        to_assign = [a for a in assets if a.pk not in already_ids]
+        skipped = sorted(a.asset_id for a in assets if a.pk in already_ids)
+
+        if not to_assign:
+            raise ValidationError(
+                {'asset_ids': 'All selected assets already have an active allocation for this licence.'}
+            )
+
+        required = len(to_assign)
+        if not license_obj.is_unlimited and license_obj.available_seats < required:
+            raise ValidationError(
+                {
+                    'asset_ids': (
+                        f'Not enough seats for this licence: {license_obj.available_seats} available, '
+                        f'{required} needed.'
+                    )
+                }
+            )
+
+        created = []
+        with transaction.atomic():
+            for asset in to_assign:
+                allocation = LicenseAllocation(
+                    license=license_obj,
+                    asset=asset,
+                    assigned_by=request.user,
+                    assigned_date=assigned_date,
+                    notes=notes,
+                    status='active',
+                )
+                allocation.full_clean()
+                allocation.save()
+                created.append(allocation)
+            if not license_obj.is_unlimited:
+                license_obj.available_seats -= required
+                license_obj.save(update_fields=['available_seats'])
+
+        detail = f'Licence assigned to {len(created)} asset(s).'
+        if skipped:
+            detail += f' Skipped {len(skipped)} already assigned: {", ".join(skipped)}.'
+
+        return Response(
+            {
+                'detail': detail,
+                'created': LicenseAllocationSerializer(
+                    created, many=True, context={'request': request}
+                ).data,
+                'skipped': skipped,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(detail=True, methods=['post'], url_path='revoke')
     def revoke(self, request, pk=None):

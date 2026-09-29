@@ -12,6 +12,7 @@ import {
   DialogTitle,
   Divider,
   Grid,
+  Link,
   MenuItem,
   Paper,
   Stack,
@@ -30,11 +31,14 @@ import SaveIcon from '@mui/icons-material/Save';
 import WifiTetheringIcon from '@mui/icons-material/WifiTethering';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import PersonIcon from '@mui/icons-material/Person';
+import LocationOnIcon from '@mui/icons-material/LocationOn';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { DataGrid } from '@mui/x-data-grid';
 import api from '../../api/axios';
 import TrellixPanel from './TrellixPanel';
 import SynthesiaPanel from './SynthesiaPanel';
 import TeamViewerPanel from './TeamViewerPanel';
+import DellSupportPanel from './DellSupportPanel';
 
 const EMPTY_FORM = {
   base_url: 'https://suremdm.42gears.com/api',
@@ -114,6 +118,21 @@ const formatActiveDuration = (value) => {
   return `${hours} hours ${minutes} minutes`;
 };
 
+const formatCoordinates = (lat, lng) => {
+  if (lat === null || lat === undefined || lng === null || lng === undefined) return '—';
+  return `${Number(lat).toFixed(6)}, ${Number(lng).toFixed(6)}`;
+};
+
+const MapLink = ({ url, lat, lng }) => {
+  if (!url) return <Typography variant="body2" color="text.secondary">No fix</Typography>;
+  return (
+    <Link href={url} target="_blank" rel="noopener noreferrer" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, fontWeight: 600 }}>
+      {formatCoordinates(lat, lng)}
+      <OpenInNewIcon sx={{ fontSize: 14 }} />
+    </Link>
+  );
+};
+
 const buildRawRows = (device) => {
   const normalized = Object.entries(device || {})
     .filter(([key]) => !['id', 'raw', 'platform_model'].includes(key))
@@ -154,6 +173,15 @@ function SureMDMPanel() {
   const [activeTimeSearched, setActiveTimeSearched] = useState(false);
   const [employees, setEmployees] = useState([]);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const [locations, setLocations] = useState([]);
+  const [locationsSummary, setLocationsSummary] = useState(null);
+  const [locationsLoading, setLocationsLoading] = useState(false);
+  const [locationHistoryRange, setLocationHistoryRange] = useState({ start_date: today, end_date: today });
+  const [locationHistoryEmployeeId, setLocationHistoryEmployeeId] = useState('');
+  const [locationHistoryRows, setLocationHistoryRows] = useState([]);
+  const [locationHistorySummary, setLocationHistorySummary] = useState(null);
+  const [locationHistoryLoading, setLocationHistoryLoading] = useState(false);
+  const [locationHistorySearched, setLocationHistorySearched] = useState(false);
 
   const showMessage = (severity, text) => setMessage({ severity, text });
 
@@ -219,6 +247,42 @@ function SureMDMPanel() {
     }
   };
 
+  const loadLocations = async () => {
+    setLocationsLoading(true);
+    try {
+      const res = await api.get('/integrations/suremdm/locations/?limit=500');
+      setLocations((res.data?.results || []).map((row, index) => ({
+        id: row.suremdm_device_id || index,
+        ...row,
+      })));
+      setLocationsSummary(res.data || null);
+    } catch (err) {
+      setLocations([]);
+      setLocationsSummary(null);
+    } finally {
+      setLocationsLoading(false);
+    }
+  };
+
+  const loadLocationHistory = async (range = locationHistoryRange, employeeId = locationHistoryEmployeeId) => {
+    setLocationHistoryLoading(true);
+    try {
+      const params = new URLSearchParams(range);
+      if (employeeId) params.set('employee_id', employeeId);
+      const res = await api.get(`/integrations/suremdm/location-history/?${params.toString()}`);
+      setLocationHistoryRows((res.data?.results || []).map((row, index) => ({
+        row_key: `${row.suremdm_device_id || 'device'}-${row.recorded_at || index}`,
+        ...row,
+      })));
+      setLocationHistorySummary(res.data || null);
+    } catch (err) {
+      setLocationHistoryRows([]);
+      setLocationHistorySummary(null);
+    } finally {
+      setLocationHistoryLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadConnection();
     loadEmployees();
@@ -227,8 +291,16 @@ function SureMDMPanel() {
   useEffect(() => {
     if (connection?.last_test_status === 'success') {
       loadDevices();
+      loadLocations();
     }
   }, [connection]);
+
+  useEffect(() => {
+    if (locationHistorySearched && connection?.last_test_status === 'success') {
+      loadLocationHistory(locationHistoryRange, locationHistoryEmployeeId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationHistoryRange.start_date, locationHistoryRange.end_date, locationHistoryEmployeeId]);
 
   useEffect(() => {
     if (activeTimeSearched && connection?.last_test_status === 'success') {
@@ -240,6 +312,11 @@ function SureMDMPanel() {
   const handleViewActiveTime = () => {
     setActiveTimeSearched(true);
     loadActiveTime(activeTimeRange, selectedEmployeeId);
+  };
+
+  const handleViewLocationHistory = () => {
+    setLocationHistorySearched(true);
+    loadLocationHistory(locationHistoryRange, locationHistoryEmployeeId);
   };
 
   const handleSave = async () => {
@@ -277,8 +354,12 @@ function SureMDMPanel() {
     await loadConnection();
     await loadEmployees();
     await loadDevices();
+    await loadLocations();
     if (activeTimeSearched) {
       await loadActiveTime();
+    }
+    if (locationHistorySearched) {
+      await loadLocationHistory();
     }
   };
 
@@ -318,7 +399,93 @@ function SureMDMPanel() {
     { field: 'activity_source', headerName: 'Source', flex: 0.8, minWidth: 110 },
   ];
 
+  const addressColumn = {
+    field: 'address',
+    headerName: 'Address',
+    flex: 1.6,
+    minWidth: 240,
+    renderCell: ({ row, value }) => {
+      if (!value) {
+        return <Typography variant="body2" color="text.secondary">{row.has_location ? 'Address unavailable' : '—'}</Typography>;
+      }
+      return (
+        <Box sx={{ py: 0.5 }}>
+          <Typography variant="body2" sx={{ whiteSpace: 'normal', lineHeight: 1.35 }}>{value}</Typography>
+          {row.address_source === 'geocoded' && (
+            <Typography variant="caption" color="text.secondary">Approx. (OpenStreetMap)</Typography>
+          )}
+        </Box>
+      );
+    },
+  };
+  const accuracyColumn = {
+    field: 'accuracy_m',
+    headerName: 'Accuracy',
+    flex: 0.6,
+    minWidth: 100,
+    renderCell: ({ value }) => <Typography variant="body2">{value ? `±${Math.round(value)} m` : '—'}</Typography>,
+  };
+  const coordinatesColumn = {
+    field: 'coordinates',
+    headerName: 'Coordinates',
+    flex: 1,
+    minWidth: 185,
+    sortable: false,
+    renderCell: ({ row }) => <MapLink url={row.map_url} lat={row.latitude} lng={row.longitude} />,
+  };
+  const reportedAtColumn = {
+    field: 'recorded_at',
+    headerName: 'Reported At',
+    flex: 1,
+    minWidth: 170,
+    renderCell: ({ value }) => <Typography variant="body2">{formatIndianDateTime(value)}</Typography>,
+  };
+  const sourceColumn = {
+    field: 'location_mode',
+    headerName: 'Source',
+    flex: 0.6,
+    minWidth: 95,
+    renderCell: ({ value }) => <Typography variant="body2">{value || '—'}</Typography>,
+  };
+  const speedColumn = {
+    field: 'speed_mps',
+    headerName: 'Speed',
+    flex: 0.6,
+    minWidth: 95,
+    renderCell: ({ value }) => (
+      <Typography variant="body2">{value === null || value === undefined ? '—' : `${(value * 3.6).toFixed(1)} km/h`}</Typography>
+    ),
+  };
+
+  const lastLocationColumns = [
+    { field: 'name', headerName: 'Device', flex: 1, minWidth: 150, valueGetter: (value, row) => row.name || row.serial_number || row.suremdm_device_id },
+    { field: 'serial_number', headerName: 'Serial Number', flex: 0.9, minWidth: 130 },
+    { field: 'category', headerName: 'MDM Category', flex: 0.9, minWidth: 130 },
+    { field: 'platform', headerName: 'Platform', flex: 0.7, minWidth: 110 },
+    coordinatesColumn,
+    addressColumn,
+    accuracyColumn,
+    sourceColumn,
+    reportedAtColumn,
+  ];
+
+  const locationHistoryColumns = [
+    reportedAtColumn,
+    { field: 'name', headerName: 'Device', flex: 1, minWidth: 140, valueGetter: (value, row) => row.name || row.serial_number || row.suremdm_device_id },
+    coordinatesColumn,
+    addressColumn,
+    accuracyColumn,
+    sourceColumn,
+    speedColumn,
+  ];
+
   const selectedEmployee = employees.find((employee) => String(employee.id) === String(selectedEmployeeId));
+  const locationHistoryEmployee = employees.find(
+    (employee) => String(employee.id) === String(locationHistoryEmployeeId)
+  );
+  const lastKnownLocationForSelected = selectedDevice
+    ? locations.find((row) => String(row.suremdm_device_id) === String(selectedDevice.suremdm_device_id))
+    : null;
 
   const columns = [
     {
@@ -747,6 +914,180 @@ function SureMDMPanel() {
             </CardContent>
           </Card>
         </Grid>
+
+        <Grid item xs={12}>
+          <Card sx={{ borderRadius: 2, boxShadow: 2 }}>
+            <CardContent sx={{ p: 3 }}>
+              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
+                <Stack direction="row" alignItems="center" spacing={1}>
+                  <LocationOnIcon color="primary" />
+                  <Typography variant="h6" fontWeight={700}>
+                    Device Locations
+                  </Typography>
+                </Stack>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<RefreshIcon />}
+                  onClick={loadLocations}
+                  disabled={locationsLoading}
+                >
+                  Refresh locations
+                </Button>
+              </Stack>
+
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Last reported position of each managed device. Coordinates open in Google Maps. Devices show
+                “No fix” until location tracking has been enabled for them in SureMDM. Addresses SureMDM
+                couldn’t resolve are looked up from OpenStreetMap and marked “Approx.”.
+              </Typography>
+
+              <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid item xs={6} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2 }}>
+                    <Typography variant="caption" color="text.secondary">Devices with a location</Typography>
+                    <Typography variant="h5" fontWeight={800}>
+                      {locationsSummary ? `${locationsSummary.located_count} / ${locationsSummary.count}` : '--'}
+                    </Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={6} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2 }}>
+                    <Typography variant="caption" color="text.secondary">Addresses geocoded</Typography>
+                    <Typography variant="h5" fontWeight={800}>
+                      {locationsSummary ? (locationsSummary.geocoded_count ?? 0) : '--'}
+                    </Typography>
+                  </Paper>
+                </Grid>
+              </Grid>
+
+              <Box sx={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', mb: 4 }}>
+                <DataGrid
+                  rows={locations}
+                  columns={lastLocationColumns}
+                  autoHeight
+                  loading={locationsLoading}
+                  getRowHeight={() => 'auto'}
+                  pageSizeOptions={[10, 25, 50]}
+                  initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+                  sx={{
+                    border: 'none',
+                    minWidth: 700,
+                    fontSize: 13.5,
+                    '& .MuiDataGrid-cell': { py: 1 },
+                    '& .MuiDataGrid-columnHeaders': { backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' },
+                    '& .MuiDataGrid-row': { cursor: 'default' },
+                  }}
+                />
+              </Box>
+
+              <Divider sx={{ mb: 2 }} />
+              <Typography variant="subtitle1" fontWeight={800} sx={{ mb: 1.5 }}>
+                Location History
+              </Typography>
+
+              <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid item xs={12} sm={4}>
+                  <TextField
+                    select
+                    label="Select user"
+                    size="small"
+                    fullWidth
+                    value={locationHistoryEmployeeId}
+                    onChange={(e) => setLocationHistoryEmployeeId(e.target.value)}
+                  >
+                    <MenuItem value="">All users</MenuItem>
+                    {employees.map((employee) => (
+                      <MenuItem key={employee.id} value={employee.id}>
+                        {employee.full_name || employee.employee_id}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
+                <Grid item xs={12} sm={3}>
+                  <TextField
+                    label="Start date"
+                    type="date"
+                    size="small"
+                    fullWidth
+                    InputLabelProps={{ shrink: true }}
+                    value={locationHistoryRange.start_date}
+                    onChange={(e) => setLocationHistoryRange((prev) => ({ ...prev, start_date: e.target.value }))}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={3}>
+                  <TextField
+                    label="End date"
+                    type="date"
+                    size="small"
+                    fullWidth
+                    InputLabelProps={{ shrink: true }}
+                    value={locationHistoryRange.end_date}
+                    onChange={(e) => setLocationHistoryRange((prev) => ({ ...prev, end_date: e.target.value }))}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={2}>
+                  <Button
+                    variant="contained"
+                    fullWidth
+                    sx={{ height: '40px' }}
+                    onClick={handleViewLocationHistory}
+                    disabled={locationHistoryLoading}
+                  >
+                    View
+                  </Button>
+                </Grid>
+              </Grid>
+
+              {!locationHistorySearched ? (
+                <Paper variant="outlined" sx={{ p: 3, bgcolor: 'grey.50', textAlign: 'center' }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Choose a user (or leave as “All users”) and a date range, then click “View” to see the
+                    recorded location trail.
+                  </Typography>
+                </Paper>
+              ) : (
+                <>
+                  <Paper variant="outlined" sx={{ p: 2, mb: 2, bgcolor: 'grey.50' }}>
+                    <Stack direction="row" alignItems="center" spacing={1}>
+                      <PersonIcon color="primary" />
+                      <Typography fontWeight={700}>
+                        {locationHistoryEmployee
+                          ? `${locationHistoryEmployee.full_name} (${locationHistoryEmployee.employee_id})`
+                          : 'All users'}
+                      </Typography>
+                    </Stack>
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                      {locationHistorySummary?.selected_asset?.asset_id
+                        ? `Laptop: ${locationHistorySummary.selected_asset.asset_id} • ${locationHistorySummary.total_points} points`
+                        : `${locationHistorySummary?.total_points ?? 0} points across ${locationHistorySummary?.total_devices ?? 0} device(s)`}
+                    </Typography>
+                  </Paper>
+
+                  <Box sx={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                    <DataGrid
+                      rows={locationHistoryRows}
+                      columns={locationHistoryColumns}
+                      getRowId={(row) => row.row_key}
+                      autoHeight
+                      loading={locationHistoryLoading}
+                      getRowHeight={() => 'auto'}
+                      pageSizeOptions={[10, 25, 50]}
+                      initialState={{ pagination: { paginationModel: { pageSize: 25 } } }}
+                      sx={{
+                        border: 'none',
+                        minWidth: 700,
+                        '& .MuiDataGrid-cell': { py: 1 },
+                        '& .MuiDataGrid-columnHeaders': { backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' },
+                        '& .MuiDataGrid-row': { cursor: 'default' },
+                      }}
+                    />
+                  </Box>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </Grid>
       </Grid>
 
       <Dialog
@@ -784,6 +1125,58 @@ function SureMDMPanel() {
               </Grid>
             ))}
           </Grid>
+
+          <Divider sx={{ mb: 2 }} />
+          <Typography variant="subtitle1" fontWeight={800} sx={{ mb: 1.5 }}>
+            Last Known Location
+          </Typography>
+          {lastKnownLocationForSelected?.has_location ? (
+            <Grid container spacing={2} sx={{ mb: 3 }}>
+              <Grid item xs={12} sm={6} md={4}>
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1, height: '100%' }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={700}>Coordinates</Typography>
+                  <Box sx={{ mt: 0.5 }}>
+                    <MapLink
+                      url={lastKnownLocationForSelected.map_url}
+                      lat={lastKnownLocationForSelected.latitude}
+                      lng={lastKnownLocationForSelected.longitude}
+                    />
+                  </Box>
+                </Paper>
+              </Grid>
+              <Grid item xs={12} sm={6} md={4}>
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1, height: '100%' }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={700}>Reported At</Typography>
+                  <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5 }}>
+                    {formatIndianDateTime(lastKnownLocationForSelected.recorded_at)}
+                  </Typography>
+                </Paper>
+              </Grid>
+              <Grid item xs={12} sm={6} md={4}>
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1, height: '100%' }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={700}>Accuracy</Typography>
+                  <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5 }}>
+                    {lastKnownLocationForSelected.accuracy_m
+                      ? `±${Math.round(lastKnownLocationForSelected.accuracy_m)} m`
+                      : '—'}
+                  </Typography>
+                </Paper>
+              </Grid>
+              <Grid item xs={12}>
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={700}>Address</Typography>
+                  <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5, wordBreak: 'break-word' }}>
+                    {lastKnownLocationForSelected.address || '—'}
+                  </Typography>
+                </Paper>
+              </Grid>
+            </Grid>
+          ) : (
+            <Alert severity="info" sx={{ mb: 3 }}>
+              No location reported for this device. Enable location tracking for it in SureMDM to start
+              collecting positions.
+            </Alert>
+          )}
 
           <Divider sx={{ mb: 2 }} />
           <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1.5 }}>
@@ -838,12 +1231,14 @@ function Integrations() {
         <Tab value="trellix" label="Endpoint Security (Trellix)" />
         <Tab value="synthesia" label="AI Video (Synthesia)" />
         <Tab value="teamviewer" label="Remote Access (TeamViewer)" />
+        <Tab value="dell" label="Dell Warranty" />
       </Tabs>
 
       {tab === 'suremdm' && <SureMDMPanel />}
       {tab === 'trellix' && <TrellixPanel />}
       {tab === 'synthesia' && <SynthesiaPanel />}
       {tab === 'teamviewer' && <TeamViewerPanel />}
+      {tab === 'dell' && <DellSupportPanel />}
     </Box>
   );
 }

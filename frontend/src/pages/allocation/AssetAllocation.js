@@ -23,6 +23,7 @@ import {
 } from '@mui/material';
 import SettingsBackupRestoreIcon from '@mui/icons-material/SettingsBackupRestore';
 import DeleteIcon from '@mui/icons-material/Delete';
+import EditIcon from '@mui/icons-material/Edit';
 import PrintIcon from '@mui/icons-material/Print';
 import { QRCodeSVG } from 'qrcode.react';
 import DataTable from '../../components/common/DataTable';
@@ -52,9 +53,21 @@ const EMPTY_HW_FORM = {
 };
 
 const EMPTY_SW_FORM = {
+  target: 'employee', // 'employee' | 'asset'
   employee: '',
+  assets: [],
   license: '',
-  assigned_date: new Date().toISOString().split('T')[0],
+  assigned_date: '',
+  notes: '',
+};
+
+const EMPTY_SW_EDIT_FORM = {
+  id: null,
+  target: 'employee',
+  employee: '',
+  asset_label: '',
+  assigned_date: '',
+  notes: '',
 };
 
 function AssetAllocation() {
@@ -79,10 +92,14 @@ function AssetAllocation() {
   const [swForm, setSwForm] = useState(EMPTY_SW_FORM);
   const [savingSw, setSavingSw] = useState(false);
   const [revokeSw, setRevokeSw] = useState({ open: false, row: null });
+  const [swEditDialog, setSwEditDialog] = useState(false);
+  const [swEditForm, setSwEditForm] = useState(EMPTY_SW_EDIT_FORM);
+  const [savingSwEdit, setSavingSwEdit] = useState(false);
 
   // Dropdowns
   const [employees, setEmployees] = useState([]);
   const [availableAssets, setAvailableAssets] = useState([]);
+  const [allAssets, setAllAssets] = useState([]);
   const [availableLicenses, setAvailableLicenses] = useState([]);
   const [assetTypes, setAssetTypes] = useState([]);
   const [assetTypeFilter, setAssetTypeFilter] = useState([]);
@@ -92,6 +109,25 @@ function AssetAllocation() {
     const filterKey = tab === 0 ? 'hardware' : 'software';
     return assetTypes.filter((type) => type.asset_type === filterKey);
   }, [assetTypes, tab]);
+
+  // Every hardware asset (laptops/devices) - target list for device-linked licences.
+  const hardwareAssets = useMemo(() => {
+    const hardwareTypeIds = new Set(
+      assetTypes.filter((t) => t.asset_type === 'hardware').map((t) => String(t.id))
+    );
+    const hardwareTypeNames = new Set(
+      assetTypes.filter((t) => t.asset_type === 'hardware').map((t) => t.name)
+    );
+    return allAssets
+      .filter((a) => {
+        const typeId = String(a.asset_type?.id ?? a.asset_type ?? '');
+        const typeName = a.asset_type_name || a.asset_type?.name || '';
+        // If we can't resolve asset types yet, show everything rather than nothing.
+        if (!hardwareTypeIds.size && !hardwareTypeNames.size) return true;
+        return hardwareTypeIds.has(typeId) || hardwareTypeNames.has(typeName);
+      })
+      .sort((a, b) => String(a.asset_id).localeCompare(String(b.asset_id)));
+  }, [allAssets, assetTypes]);
 
   const allocatedAssetIds = useMemo(() => {
     return new Set(
@@ -140,11 +176,12 @@ function AssetAllocation() {
     setHwLoading(true);
     setSwLoading(true);
     try {
-      const [hwRes, swRes, empRes, assetRes, licRes, typeRes] = await Promise.all([
+      const [hwRes, swRes, empRes, assetRes, allAssetRes, licRes, typeRes] = await Promise.all([
         api.get('/allocation/assets/').catch(() => ({ data: [] })),
         api.get('/allocation/licenses/').catch(() => ({ data: [] })),
         api.get('/employees/?scope=allocatable').catch(() => ({ data: [] })),
         api.get('/inventory/assets/?status=available&source=portal').catch(() => ({ data: [] })),
+        api.get('/inventory/assets/?source=portal').catch(() => ({ data: [] })),
         api.get('/inventory/software-licenses/').catch(() => ({ data: [] })),
         api.get('/inventory/asset-types/').catch(() => ({ data: [] })),
       ]);
@@ -153,6 +190,7 @@ function AssetAllocation() {
       const sw = Array.isArray(swRes.data) ? swRes.data : swRes.data.results || [];
       const emp = Array.isArray(empRes.data) ? empRes.data : empRes.data.results || [];
       const assets = Array.isArray(assetRes.data) ? assetRes.data : assetRes.data.results || [];
+      const everyAsset = Array.isArray(allAssetRes.data) ? allAssetRes.data : allAssetRes.data.results || [];
       const lics = Array.isArray(licRes.data) ? licRes.data : licRes.data.results || [];
 
       setHwAllocations(hw.map((r) => ({ ...r, id: r.id || r.pk })));
@@ -163,6 +201,7 @@ function AssetAllocation() {
           .map((a) => ({ ...a, id: a.id || a.pk }))
           .filter((a) => String(a.status || '').toLowerCase() === 'available')
       );
+      setAllAssets(everyAsset.map((a) => ({ ...a, id: a.id || a.pk })));
       setAvailableLicenses(lics.map((l) => ({ ...l, id: l.id || l.pk })));
       const types = Array.isArray(typeRes.data) ? typeRes.data : typeRes.data.results || [];
       setAssetTypes(types.map((t) => ({ ...t, id: t.id || t.pk })));
@@ -229,10 +268,41 @@ function AssetAllocation() {
   };
 
   const handleAssignSw = async () => {
+    if (!swForm.license) {
+      showSnack('Please select a software license.', 'error');
+      return;
+    }
+    if (!swForm.assigned_date) {
+      showSnack('Please select an assignment date.', 'error');
+      return;
+    }
+    if (swForm.target === 'employee' && !swForm.employee) {
+      showSnack('Please select an employee.', 'error');
+      return;
+    }
+    if (swForm.target === 'asset' && !swForm.assets.length) {
+      showSnack('Please select at least one laptop / device.', 'error');
+      return;
+    }
     setSavingSw(true);
     try {
-      await api.post('/allocation/licenses/', swForm);
-      showSnack('License assigned successfully.');
+      if (swForm.target === 'asset') {
+        const res = await api.post('/allocation/licenses/assign-devices/', {
+          license: swForm.license,
+          asset_ids: swForm.assets,
+          assigned_date: swForm.assigned_date,
+          notes: swForm.notes,
+        });
+        showSnack(res.data?.detail || 'License assigned to devices.');
+      } else {
+        await api.post('/allocation/licenses/', {
+          license: swForm.license,
+          employee: swForm.employee,
+          assigned_date: swForm.assigned_date,
+          notes: swForm.notes,
+        });
+        showSnack('License assigned successfully.');
+      }
       setSwDialog(false);
       setSwForm(EMPTY_SW_FORM);
       fetchAll();
@@ -240,6 +310,51 @@ function AssetAllocation() {
       showSnack(extractErrorMessage(err, 'Assignment failed.'), 'error');
     } finally {
       setSavingSw(false);
+    }
+  };
+
+  const openEditSw = (row) => {
+    const isAsset = Boolean(row.asset_detail?.id || row.asset);
+    setSwEditForm({
+      id: row.id,
+      target: isAsset ? 'asset' : 'employee',
+      employee: row.employee_detail?.id || row.employee || '',
+      asset_label: isAsset
+        ? row.asset_detail?.asset_id || row.asset_id || String(row.asset)
+        : '',
+      assigned_date: row.assigned_date || '',
+      notes: row.notes || '',
+    });
+    setSwEditDialog(true);
+  };
+
+  const handleUpdateSw = async () => {
+    if (!swEditForm.assigned_date) {
+      showSnack('Please select an assignment date.', 'error');
+      return;
+    }
+    if (swEditForm.target === 'employee' && !swEditForm.employee) {
+      showSnack('Please select an employee.', 'error');
+      return;
+    }
+    setSavingSwEdit(true);
+    try {
+      const payload = {
+        assigned_date: swEditForm.assigned_date,
+        notes: swEditForm.notes,
+      };
+      if (swEditForm.target === 'employee') {
+        payload.employee = swEditForm.employee;
+      }
+      await api.patch(`/allocation/licenses/${swEditForm.id}/`, payload);
+      showSnack('License allocation updated.');
+      setSwEditDialog(false);
+      setSwEditForm(EMPTY_SW_EDIT_FORM);
+      fetchAll();
+    } catch (err) {
+      showSnack(extractErrorMessage(err, 'Update failed.'), 'error');
+    } finally {
+      setSavingSwEdit(false);
     }
   };
 
@@ -390,12 +505,32 @@ function AssetAllocation() {
     },
     {
       field: 'employee_detail',
-      headerName: 'Employee',
+      headerName: 'Assigned To',
       flex: 1,
       renderCell: ({ row }) => {
+        const assetId = row.asset_detail?.asset_id || (row.asset ? row.asset_id : '');
+        if (assetId) {
+          return <Chip label={assetId} size="small" variant="outlined" color="info" />;
+        }
         const employeeId = row.employee_detail?.id || row.employee || row.employee_detail?.employee?.id;
         const label = row.employee_detail?.full_name || row.employee_name || row.employee || '--';
         return <EmployeeLink employeeId={employeeId}>{label}</EmployeeLink>;
+      },
+    },
+    {
+      field: 'target_type',
+      headerName: 'Type',
+      width: 110,
+      renderCell: ({ row }) => {
+        const isAsset = Boolean(row.asset_detail?.id || row.asset);
+        return (
+          <Chip
+            label={isAsset ? 'Device' : 'Employee'}
+            size="small"
+            color={isAsset ? 'info' : 'default'}
+            variant={isAsset ? 'filled' : 'outlined'}
+          />
+        );
       },
     },
     { field: 'assigned_date', headerName: 'Assigned Date', width: 140 },
@@ -415,20 +550,32 @@ function AssetAllocation() {
     {
       field: 'actions',
       headerName: 'Actions',
-      width: 100,
+      width: 120,
       sortable: false,
-      renderCell: ({ row }) =>
-        row.status !== 'revoked' ? (
-          <Tooltip title="Revoke License">
+      renderCell: ({ row }) => (
+        <Box>
+          <Tooltip title="Edit Allocation">
             <IconButton
               size="small"
-              color="error"
-              onClick={() => setRevokeSw({ open: true, row })}
+              color="primary"
+              onClick={() => openEditSw(row)}
             >
-              <SettingsBackupRestoreIcon fontSize="small" />
+              <EditIcon fontSize="small" />
             </IconButton>
           </Tooltip>
-        ) : null,
+          {row.status !== 'revoked' && (
+            <Tooltip title="Revoke License">
+              <IconButton
+                size="small"
+                color="error"
+                onClick={() => setRevokeSw({ open: true, row })}
+              >
+                <SettingsBackupRestoreIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+        </Box>
+      ),
     },
   ];
 
@@ -618,21 +765,6 @@ function AssetAllocation() {
             <Grid item xs={12}>
               <TextField
                 select
-                label="Employee"
-                fullWidth
-                value={swForm.employee}
-                onChange={(e) => setSwForm({ ...swForm, employee: e.target.value })}
-              >
-                {employees.map((e) => (
-                  <MenuItem key={e.id} value={e.id}>
-                    {e.full_name || e.email}
-                  </MenuItem>
-                ))}
-              </TextField>
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                select
                 label="Software License"
                 fullWidth
                 value={swForm.license}
@@ -647,20 +779,183 @@ function AssetAllocation() {
             </Grid>
             <Grid item xs={12} sm={6}>
               <TextField
+                select
+                label="Assign To"
+                fullWidth
+                value={swForm.target}
+                onChange={(e) =>
+                  setSwForm({ ...swForm, target: e.target.value, employee: '', assets: [] })
+                }
+                helperText={
+                  swForm.target === 'asset'
+                    ? 'Links the license to laptop / device asset IDs, not an employee'
+                    : ' '
+                }
+              >
+                <MenuItem value="employee">Employee</MenuItem>
+                <MenuItem value="asset">Laptop / Device</MenuItem>
+              </TextField>
+            </Grid>
+            {swForm.target === 'employee' ? (
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  select
+                  label="Employee"
+                  fullWidth
+                  value={swForm.employee}
+                  onChange={(e) => setSwForm({ ...swForm, employee: e.target.value })}
+                >
+                  {employees.map((e) => (
+                    <MenuItem key={e.id} value={e.id}>
+                      {e.full_name || e.email}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
+            ) : (
+              <Grid item xs={12}>
+                <TextField
+                  select
+                  label="Laptops / Devices"
+                  fullWidth
+                  value={swForm.assets}
+                  onChange={(e) =>
+                    setSwForm({
+                      ...swForm,
+                      assets: typeof e.target.value === 'string'
+                        ? e.target.value.split(',')
+                        : e.target.value,
+                    })
+                  }
+                  SelectProps={{
+                    multiple: true,
+                    renderValue: (selected) =>
+                      selected.length
+                        ? `${selected.length} device${selected.length > 1 ? 's' : ''} selected`
+                        : 'Select laptop / device asset IDs',
+                  }}
+                  helperText={`${hardwareAssets.length} hardware asset(s) available`}
+                >
+                  {hardwareAssets.length === 0 ? (
+                    <MenuItem disabled value="">
+                      No hardware assets found
+                    </MenuItem>
+                  ) : (
+                    hardwareAssets.map((a) => (
+                      <MenuItem key={a.id} value={a.id}>
+                        {formatAssetLabel(a)}
+                      </MenuItem>
+                    ))
+                  )}
+                </TextField>
+              </Grid>
+            )}
+            <Grid item xs={12} sm={6}>
+              <TextField
                 label="Assigned Date"
                 type="date"
+                required
                 fullWidth
                 value={swForm.assigned_date}
                 onChange={(e) => setSwForm({ ...swForm, assigned_date: e.target.value })}
                 InputLabelProps={{ shrink: true }}
+                error={!swForm.assigned_date}
+                helperText={!swForm.assigned_date ? 'Select the assignment date' : ' '}
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                label="Notes"
+                fullWidth
+                multiline
+                rows={2}
+                value={swForm.notes}
+                onChange={(e) => setSwForm({ ...swForm, notes: e.target.value })}
               />
             </Grid>
           </Grid>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button onClick={() => setSwDialog(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleAssignSw} disabled={savingSw}>
+          <Button
+            variant="contained"
+            onClick={handleAssignSw}
+            disabled={
+              savingSw ||
+              !swForm.license ||
+              !swForm.assigned_date ||
+              (swForm.target === 'employee' && !swForm.employee) ||
+              (swForm.target === 'asset' && !swForm.assets.length)
+            }
+          >
             {savingSw ? 'Assigning...' : 'Assign'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* SW Edit Dialog */}
+      <Dialog open={swEditDialog} onClose={() => setSwEditDialog(false)} maxWidth="sm" fullWidth fullScreen={fullScreen}>
+        <DialogTitle>Edit License Allocation</DialogTitle>
+        <DialogContent sx={{ pt: '12px !important' }}>
+          <Grid container spacing={2}>
+            <Grid item xs={12}>
+              {swEditForm.target === 'asset' ? (
+                <TextField
+                  label="Laptop / Device"
+                  fullWidth
+                  value={swEditForm.asset_label}
+                  disabled
+                  helperText="This license is linked to a device asset ID"
+                />
+              ) : (
+                <TextField
+                  select
+                  label="Employee"
+                  fullWidth
+                  value={swEditForm.employee}
+                  onChange={(e) => setSwEditForm({ ...swEditForm, employee: e.target.value })}
+                >
+                  {employees.map((e) => (
+                    <MenuItem key={e.id} value={e.id}>
+                      {e.full_name || e.email}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              )}
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Assigned Date"
+                type="date"
+                required
+                fullWidth
+                value={swEditForm.assigned_date}
+                onChange={(e) => setSwEditForm({ ...swEditForm, assigned_date: e.target.value })}
+                InputLabelProps={{ shrink: true }}
+                error={!swEditForm.assigned_date}
+                helperText={!swEditForm.assigned_date ? 'Select the assignment date' : ' '}
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                label="Notes"
+                fullWidth
+                multiline
+                rows={2}
+                value={swEditForm.notes}
+                onChange={(e) => setSwEditForm({ ...swEditForm, notes: e.target.value })}
+              />
+            </Grid>
+          </Grid>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setSwEditDialog(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={handleUpdateSw}
+            disabled={savingSwEdit || !swEditForm.assigned_date}
+          >
+            {savingSwEdit ? 'Saving...' : 'Save'}
           </Button>
         </DialogActions>
       </Dialog>

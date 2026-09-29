@@ -201,6 +201,61 @@ class SoftwareLicense(models.Model):
         return f'{self.software_name} ({self.available_seats}/{self.total_seats} seats)'
 
 
+class AssetSupportInfo(models.Model):
+    """
+    Manufacturer support data (warranty entitlements + the original shipped
+    configuration) scraped from Dell / Lenovo public support pages, keyed by the
+    asset's service tag / serial number. Cached here so the asset dashboard
+    doesn't hit the vendor site on every load - refreshed on demand from the
+    dashboard's "Refresh" button.
+
+    Only populated for laptops and monitors (see
+    ``inventory.vendor_support.asset_supports_vendor_lookup``).
+    """
+
+    MANUFACTURER_CHOICES = [
+        ('dell', 'Dell'),
+        ('lenovo', 'Lenovo'),
+    ]
+    FETCH_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('success', 'Success'),
+        ('error', 'Error'),
+        ('unsupported', 'Unsupported'),
+    ]
+
+    asset = models.OneToOneField(
+        Asset,
+        on_delete=models.CASCADE,
+        related_name='support_info',
+    )
+    manufacturer = models.CharField(max_length=20, choices=MANUFACTURER_CHOICES, blank=True)
+    service_tag = models.CharField(max_length=100, blank=True)
+    product_name = models.CharField(max_length=255, blank=True)
+    ship_date = models.DateField(null=True, blank=True)
+    # Normalized warranty summary:
+    #   {"plan": str, "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD",
+    #    "status": "active|expired|unknown",
+    #    "entitlements": [{"plan": str, "start_date": str, "end_date": str}]}
+    warranty = models.JSONField(default=dict, blank=True)
+    # Original configuration line items, in the order the vendor lists them:
+    #   [{"code": "379-BEJJ", "description": "11th Generation Intel Core i5-1135G7 ..."}]
+    product_specifications = models.JSONField(default=list, blank=True)
+    source_url = models.URLField(blank=True)
+    raw = models.JSONField(default=dict, blank=True)
+    fetch_status = models.CharField(max_length=20, choices=FETCH_STATUS_CHOICES, default='pending')
+    fetch_error = models.TextField(blank=True)
+    fetched_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'asset_support_info'
+
+    def __str__(self):
+        return f'{self.asset.asset_id} support info ({self.manufacturer or "unknown"})'
+
+
 class InstalledAppReportImport(models.Model):
     file_name = models.CharField(max_length=255)
     imported_by = models.ForeignKey(

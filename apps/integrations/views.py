@@ -13,14 +13,24 @@ from rest_framework.viewsets import ModelViewSet, ViewSet
 from apps.inventory.models import Asset, AssetType
 from apps.users.permissions import IsITSpecialistOrSuperAdmin
 
-from .models import SureMDMConnection, SynthesiaConnection, SynthesiaInvoice, TeamViewerConnection, TrellixConnection
+from .models import (
+    DellSupportConnection,
+    SureMDMConnection,
+    SynthesiaConnection,
+    SynthesiaInvoice,
+    TeamViewerConnection,
+    TrellixConnection,
+)
 from .serializers import (
+    DellSupportConnectionSerializer,
     SureMDMConnectionSerializer,
     SynthesiaConnectionSerializer,
     SynthesiaInvoiceSerializer,
     TeamViewerConnectionSerializer,
     TrellixConnectionSerializer,
 )
+from .dell import DellClient, DellError
+from .geocoding import ReverseGeocoder
 from .suremdm import SureMDMClient, SureMDMError
 from .synthesia import SynthesiaClient, SynthesiaError
 from .teamviewer import TeamViewerClient, TeamViewerError
@@ -308,6 +318,193 @@ def _normalize_lookup(value):
 
 def format_suremdm_datetime(dt):
     return dt.astimezone(dt_timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+
+
+def format_suremdm_location_datetime(dt):
+    # GET /api/v2/location expects 'YYYY-MM-DDTHH:MM:SS' in UTC, no fractional
+    # seconds or trailing 'Z'.
+    return dt.astimezone(dt_timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+
+
+def _to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int(value):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_present(source, keys):
+    if not isinstance(source, dict):
+        return None
+    for key in keys:
+        if key in source and source[key] not in (None, ''):
+            return source[key]
+    return None
+
+
+LOCATION_LAT_KEYS = ('Latitude', 'latitude', 'Lat', 'lat')
+LOCATION_LNG_KEYS = ('Longitude', 'longitude', 'Long', 'Lng', 'lng', 'lon')
+LOCATION_TIME_KEYS = ('Time', 'TimeStamp', 'Timestamp', 'time', 'LocationTime')
+LOCATION_ADDRESS_KEYS = (
+    'LocationName', 'locationName', 'Address', 'address',
+    'LocationAddress', 'FormattedAddress', 'formatted_address',
+)
+LOCATION_ACCURACY_KEYS = (
+    'LocationAccuracy', 'locationAccuracy', 'Accuracy', 'accuracy',
+    'HorizontalAccuracy', 'horizontalAccuracy', 'AccuracyInMeters',
+)
+# Strings SureMDM stores in LocationName when its own reverse geocoder failed.
+LOCATION_ADDRESS_SENTINELS = {
+    '', 'na', 'n/a', '-', '--', 'null', 'none', 'unknown', 'not available',
+    'address not available', 'unable to fetch the address.',
+    'unable to fetch address', 'unable to fetch the address',
+}
+# SureMDM LocationMode integer -> label (from the console's Locate view).
+LOCATION_MODE_LABELS = {0: 'Unknown', 1: 'GPS', 2: 'Network', 3: 'Fused', 4: 'Passive'}
+
+
+def clean_suremdm_address(value):
+    text = str(value or '').strip()
+    if text.lower() in LOCATION_ADDRESS_SENTINELS:
+        return ''
+    return text
+
+
+def normalize_location_point(point, device=None):
+    device = device or {}
+    latitude = _to_float(_first_present(point, LOCATION_LAT_KEYS))
+    longitude = _to_float(_first_present(point, LOCATION_LNG_KEYS))
+    speed = _to_float(point.get('Speed'))
+    bearing = _to_float(point.get('Bearing'))
+    mode = point.get('LocationMode', point.get('locationMode'))
+    has_fix = latitude is not None and longitude is not None
+    address = clean_suremdm_address(_first_present(point, LOCATION_ADDRESS_KEYS))
+    return {
+        'suremdm_device_id': str(
+            point.get('DeviceId')
+            or point.get('DeviceID')
+            or device.get('suremdm_device_id')
+            or ''
+        ),
+        'name': device.get('name', ''),
+        'serial_number': device.get('serial_number', ''),
+        'platform': device.get('platform', ''),
+        'model': device.get('model', ''),
+        'category': device.get('category', 'Uncategorized'),
+        'latitude': latitude,
+        'longitude': longitude,
+        'address': address,
+        'address_source': 'suremdm' if address else '',
+        'accuracy_m': _to_float(_first_present(point, LOCATION_ACCURACY_KEYS)),
+        # SureMDM reports -1.0 for speed/bearing when the reading is unavailable.
+        'speed_mps': speed if (speed is not None and speed >= 0) else None,
+        'bearing_deg': bearing if (bearing is not None and bearing >= 0) else None,
+        'location_mode': LOCATION_MODE_LABELS.get(_to_int(mode), '') if mode not in (None, '') else '',
+        'recorded_at': _first_present(point, LOCATION_TIME_KEYS) or '',
+        'map_url': f'https://www.google.com/maps?q={latitude},{longitude}' if has_fix else '',
+        'has_location': has_fix,
+        'raw': point,
+    }
+
+
+def fill_location_addresses(rows, budget=None):
+    """
+    Resolve a street address for location rows that SureMDM couldn't geocode,
+    using the cached reverse geocoder. Mutates rows in place.
+    """
+    geocoder = ReverseGeocoder(budget=budget)
+    for row in rows:
+        if row.get('address') or not row.get('has_location'):
+            continue
+        resolved = geocoder.resolve(row.get('latitude'), row.get('longitude'))
+        if resolved:
+            row['address'] = resolved
+            row['address_source'] = 'geocoded'
+
+
+def select_devices_for_scope(devices, employee_id=None, asset_id=None):
+    """
+    Narrow a normalized SureMDM device list to the devices that belong to a
+    given employee (via their allocated laptop) or a specific asset id.
+
+    Returns ``(devices, selected_employee, selected_asset)``. When an employee
+    is supplied but no SureMDM device could be matched to them, ``devices``
+    comes back empty.
+    """
+    selected_employee = None
+    selected_asset = None
+    identifiers = set()
+
+    if asset_id:
+        identifiers.add(str(asset_id))
+
+    if employee_id:
+        from apps.employees.models import Employee
+
+        employee = Employee.objects.prefetch_related('asset_allocations__asset').filter(pk=employee_id).first()
+        if employee:
+            selected_employee = {
+                'id': employee.id,
+                'employee_id': employee.employee_id,
+                'full_name': employee.full_name,
+            }
+            active_allocations = [a for a in employee.asset_allocations.all() if a.status == 'active']
+            laptop_allocations = [a for a in active_allocations if a.asset and is_laptop_asset(a.asset)]
+            chosen = next(
+                (a for a in laptop_allocations if find_suremdm_asset_for_employee_asset(a.asset)),
+                None,
+            )
+            if chosen is None:
+                chosen = laptop_allocations[0] if laptop_allocations else (
+                    active_allocations[0] if active_allocations else None
+                )
+            if chosen and chosen.asset:
+                asset = chosen.asset
+                mdm_asset = find_suremdm_asset_for_employee_asset(asset) or asset
+                selected_asset = {
+                    'id': mdm_asset.id,
+                    'asset_id': mdm_asset.asset_id,
+                    'asset_type': mdm_asset.asset_type.name if mdm_asset.asset_type_id else '',
+                    'serial_number': mdm_asset.serial_number,
+                }
+                for candidate in {asset, mdm_asset}:
+                    attrs = candidate.attribute_values if isinstance(candidate.attribute_values, dict) else {}
+                    identifiers.update(
+                        filter(
+                            None,
+                            {
+                                candidate.asset_id,
+                                candidate.serial_number,
+                                attrs.get('suremdm_device_id'),
+                                attrs.get('device_name'),
+                                attrs.get('DeviceName'),
+                            },
+                        )
+                    )
+
+    if employee_id and not identifiers:
+        return [], selected_employee, selected_asset
+
+    if not identifiers:
+        return devices, selected_employee, selected_asset
+
+    wanted = {str(value) for value in identifiers}
+    filtered = [
+        device for device in devices
+        if str(device.get('suremdm_device_id')) in wanted
+        or str(device.get('serial_number')) in wanted
+        or str(device.get('name')) in wanted
+    ]
+    if employee_id and not filtered:
+        return [], selected_employee, selected_asset
+    return filtered, selected_employee, selected_asset
 
 
 DEVICE_LOG_ONLINE_MESSAGE = '1'
@@ -889,6 +1086,138 @@ class SureMDMViewSet(ViewSet):
             }
         )
 
+    @action(detail=False, methods=['get'], url_path='locations')
+    def locations(self, request):
+        """Last reported GPS position for every SureMDM device."""
+        connection, error = self._configured_connection()
+        if error:
+            return error
+
+        limit = int(request.query_params.get('limit', 500))
+        client = get_client(connection)
+        try:
+            devices = normalize_devices_with_groups(client, limit=limit)
+        except SureMDMError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+
+        devices_by_id = {
+            str(device['suremdm_device_id']): device
+            for device in devices
+            if device.get('suremdm_device_id') and str(device['suremdm_device_id']) not in ('', 'None')
+        }
+        device_ids = list(devices_by_id)
+
+        latest_by_device = {}
+        try:
+            points = client.last_location(device_ids)
+        except SureMDMError:
+            points = []
+        for point in points:
+            device_id = str(point.get('DeviceId') or point.get('DeviceID') or '')
+            normalized = normalize_location_point(point, devices_by_id.get(device_id))
+            key = normalized['suremdm_device_id']
+            existing = latest_by_device.get(key)
+            if not existing or (normalized['recorded_at'] or '') > (existing['recorded_at'] or ''):
+                latest_by_device[key] = normalized
+
+        results = [
+            latest_by_device.get(device_id, normalize_location_point({}, devices_by_id[device_id]))
+            for device_id in device_ids
+        ]
+        fill_location_addresses(results)
+        for row in results:
+            row.pop('raw', None)
+        results.sort(key=lambda row: (not row['has_location'], (row['name'] or row['suremdm_device_id']).lower()))
+
+        return Response({
+            'count': len(results),
+            'located_count': sum(1 for row in results if row['has_location']),
+            'geocoded_count': sum(1 for row in results if row['address_source'] == 'geocoded'),
+            'results': results,
+        })
+
+    @action(detail=False, methods=['get'], url_path='location-history')
+    def location_history(self, request):
+        """Recorded location trail for a device / employee over a date range."""
+        connection, error = self._configured_connection()
+        if error:
+            return error
+
+        start_date = parse_date(request.query_params.get('start_date') or '') or timezone.localdate()
+        end_date = parse_date(request.query_params.get('end_date') or '') or start_date
+        if end_date < start_date:
+            return Response({'detail': 'end_date must be on or after start_date.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        limit = int(request.query_params.get('limit', 500))
+        client = get_client(connection)
+        try:
+            devices = normalize_devices_with_groups(client, limit=limit)
+        except SureMDMError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+
+        devices, selected_employee, selected_asset = select_devices_for_scope(
+            devices,
+            employee_id=request.query_params.get('employee_id'),
+            asset_id=request.query_params.get('asset_id'),
+        )
+
+        range_start = timezone.make_aware(
+            datetime.combine(start_date, datetime.min.time()), timezone.get_current_timezone()
+        )
+        range_end = timezone.make_aware(
+            datetime.combine(end_date + timedelta(days=1), datetime.min.time()), timezone.get_current_timezone()
+        )
+        from_time = format_suremdm_location_datetime(range_start)
+        to_time = format_suremdm_location_datetime(range_end)
+
+        results = []
+        for device in devices:
+            try:
+                points = client.location_history(device['suremdm_device_id'], from_time, to_time)
+            except SureMDMError:
+                continue
+            for point in points:
+                normalized = normalize_location_point(point, device)
+                normalized.pop('raw', None)
+                recorded_dt = parse_device_timestamp(normalized['recorded_at'])
+                if recorded_dt:
+                    if recorded_dt < range_start or recorded_dt >= range_end:
+                        continue
+                    normalized['date'] = timezone.localtime(recorded_dt).date().isoformat()
+                    normalized['recorded_at'] = recorded_dt.isoformat()
+                else:
+                    normalized['date'] = ''
+                results.append(normalized)
+
+        # Trails repeat coordinates a lot; de-dupe before spending geocode budget.
+        seen_coords = {}
+        for row in results:
+            if row['address'] or not row['has_location']:
+                continue
+            seen_coords.setdefault((round(row['latitude'], 5), round(row['longitude'], 5)), []).append(row)
+        representative_rows = [group[0] for group in seen_coords.values()]
+        fill_location_addresses(representative_rows)
+        for (lat, lng), group in seen_coords.items():
+            resolved = group[0]['address']
+            if resolved:
+                for row in group[1:]:
+                    row['address'] = resolved
+                    row['address_source'] = 'geocoded'
+
+        results.sort(key=lambda row: (row.get('date') or '', row.get('recorded_at') or ''), reverse=True)
+        located_devices = {row['suremdm_device_id'] for row in results if row['has_location']}
+
+        return Response({
+            'start_date': start_date.isoformat(),
+            'end_date': end_date.isoformat(),
+            'total_points': len(results),
+            'total_devices': len(located_devices),
+            'selected_employee': selected_employee,
+            'selected_asset': selected_asset,
+            'results': results,
+        })
 
 
 def get_teamviewer_connection():
@@ -897,6 +1226,34 @@ def get_teamviewer_connection():
 
 def get_teamviewer_client(connection):
     return TeamViewerClient(base_url=connection.base_url, api_token=connection.api_token)
+
+
+def get_dell_connection():
+    return DellSupportConnection.objects.order_by('-updated_at').first()
+
+
+def get_dell_client(connection):
+    """
+    Build a DellClient using the connection's cached OAuth token when it's still
+    valid; otherwise fetch a fresh one and persist it (with a 5-minute safety
+    margin) so concurrent asset lookups don't each re-authenticate.
+    """
+    token = None
+    if connection.access_token and connection.token_expires_at and connection.token_expires_at > timezone.now():
+        token = connection.access_token
+
+    client = DellClient(
+        base_url=connection.base_url,
+        client_id=connection.client_id,
+        client_secret=connection.client_secret,
+        access_token=token,
+    )
+    if not token:
+        fresh_token, expires_in = client.fetch_token()
+        connection.access_token = fresh_token
+        connection.token_expires_at = timezone.now() + timedelta(seconds=max(expires_in - 300, 60))
+        connection.save(update_fields=['access_token', 'token_expires_at', 'updated_at'])
+    return client
 
 
 TEAMVIEWER_MANAGED_GROUPS_WARNING = (
@@ -1050,6 +1407,84 @@ class TeamViewerViewSet(ViewSet):
         return Response(payload)
 
 
+class DellSupportConnectionView(APIView):
+    permission_classes = [IsITSpecialistOrSuperAdmin]
+
+    def get(self, request):
+        connection = get_dell_connection()
+        if not connection:
+            return Response({'configured': False})
+        data = DellSupportConnectionSerializer(connection).data
+        data['configured'] = True
+        return Response(data)
+
+    def post(self, request):
+        connection = get_dell_connection()
+        serializer = DellSupportConnectionSerializer(
+            connection,
+            data=request.data,
+            partial=bool(connection),
+        )
+        serializer.is_valid(raise_exception=True)
+        connection = serializer.save()
+        data = DellSupportConnectionSerializer(connection).data
+        data['configured'] = True
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class DellSupportViewSet(ViewSet):
+    permission_classes = [IsITSpecialistOrSuperAdmin]
+
+    def _configured_connection(self):
+        connection = get_dell_connection()
+        if not connection or not connection.is_active:
+            return None, Response(
+                {'detail': 'Dell TechDirect API is not configured.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not connection.client_id or not connection.client_secret:
+            return None, Response(
+                {'detail': 'Dell API client ID and client secret are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return connection, None
+
+    @action(detail=False, methods=['post'], url_path='test')
+    def test(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+
+        try:
+            client = DellClient(
+                base_url=connection.base_url,
+                client_id=connection.client_id,
+                client_secret=connection.client_secret,
+            )
+            token, expires_in = client.fetch_token()
+            connection.access_token = token
+            connection.token_expires_at = timezone.now() + timedelta(seconds=max(expires_in - 300, 60))
+            connection.last_test_status = 'success'
+            connection.last_test_message = 'Authenticated with the Dell TechDirect API successfully.'
+            response_status = status.HTTP_200_OK
+        except DellError as exc:
+            connection.access_token = ''
+            connection.token_expires_at = None
+            connection.last_test_status = 'failed'
+            connection.last_test_message = str(exc)
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code in (400, 401) else status.HTTP_400_BAD_REQUEST
+
+        connection.last_tested_at = timezone.now()
+        connection.save(update_fields=[
+            'access_token', 'token_expires_at', 'last_tested_at',
+            'last_test_status', 'last_test_message', 'updated_at',
+        ])
+        return Response(
+            {'status': connection.last_test_status, 'message': connection.last_test_message},
+            status=response_status,
+        )
+
+
 # Synthesia bills 2 credits per second of finished video (per Synthesia's
 # published credit-usage rate), and the API doesn't return a per-video
 # credit figure directly, so it's derived from `duration` on each video.
@@ -1116,6 +1551,83 @@ def normalize_synthesia_video(video):
         'thumbnail_url': (video.get('thumbnail') or {}).get('image') or '',
         'raw': video,
     }
+
+
+def compute_synthesia_cycle_usage(connection, videos):
+    """
+    Estimate credits consumed in the current billing cycle from video
+    durations, and list existing videos re-rendered during the cycle.
+
+    Returns ``(estimated_credits, cycle_started_on, videos_edited_this_cycle)``.
+
+    The estimate is a floor, not the real figure: it only sums credits for
+    videos visible through this API key (2 credits/sec of finished video),
+    while Synthesia bills against a shared pool that also covers dubbing,
+    personalization and partial re-renders, none of which appear in the
+    videos list. The current cycle's start isn't tracked separately - the
+    most recent logged invoice's payment date is the ground truth for when
+    the current plan period began, so without a logged invoice there's no
+    anchor and the estimate can't be computed.
+    """
+    latest_invoice = connection.invoices.order_by('-payment_date').first()
+    cycle_started_on = latest_invoice.payment_date if latest_invoice else None
+    if not cycle_started_on:
+        return None, None, []
+
+    cycle_start_iso = cycle_started_on.isoformat()
+    estimated_credits_used = sum(
+        video['credits_used'] or 0
+        for video in videos
+        if video['created_at'] and video['created_at'][:10] >= cycle_start_iso
+    )
+    # Editing an existing video (e.g. re-rendering a changed scene) consumes
+    # credits again without touching createdAt, so it's invisible to the sum
+    # above. Surfacing these separately at least explains where some of the
+    # gap to the real dashboard figure is likely coming from, even though the
+    # exact partial-render cost isn't available without the audit logs.
+    videos_edited_this_cycle = [
+        {
+            'video_id': video['video_id'],
+            'title': video['title'],
+            'last_updated_at': video['last_updated_at'],
+            'duration_display': video['duration_display'],
+            'credits_used': video['credits_used'],
+        }
+        for video in videos
+        if video['last_updated_at']
+        and video['last_updated_at'][:10] >= cycle_start_iso
+        and not (video['created_at'] and video['created_at'][:10] >= cycle_start_iso)
+    ]
+    return estimated_credits_used, cycle_started_on, videos_edited_this_cycle
+
+
+def sync_synthesia_credits(connection):
+    """
+    Refresh ``connection.credits_used_estimated`` from the current video list.
+
+    This is the automatic stand-in for the manually-copied dashboard figure:
+    Synthesia exposes no credit-balance endpoint on non-Enterprise plans, so
+    the estimate from :func:`compute_synthesia_cycle_usage` is recomputed on a
+    schedule (see the ``sync_synthesia_credits`` management command) and stored.
+
+    Returns ``(estimated_credits, cycle_started_on)``.
+    """
+    videos = [
+        normalize_synthesia_video(video)
+        for video in get_synthesia_client(connection).list_all_videos(max_videos=2000)
+    ]
+    estimated_credits_used, cycle_started_on, _ = compute_synthesia_cycle_usage(connection, videos)
+    now = timezone.now()
+    connection.last_synced_at = now
+    update_fields = ['last_synced_at', 'updated_at']
+    # Without a logged invoice there's no billing-cycle start to measure
+    # against, so leave the stored estimate untouched rather than blanking it.
+    if cycle_started_on is not None:
+        connection.credits_used_estimated = estimated_credits_used
+        connection.credits_used_synced_at = now
+        update_fields += ['credits_used_estimated', 'credits_used_synced_at']
+    connection.save(update_fields=update_fields)
+    return estimated_credits_used, cycle_started_on
 
 
 class SynthesiaConnectionView(APIView):
@@ -1231,46 +1743,23 @@ class SynthesiaViewSet(ViewSet):
             key = video['status'] or 'unknown'
             status_counts[key] = status_counts.get(key, 0) + 1
 
-        # The current billing cycle's start isn't tracked separately - the
-        # most recent logged invoice's payment date is the actual ground
-        # truth for when the current plan period began.
-        latest_invoice = connection.invoices.order_by('-payment_date').first()
-        cycle_started_on = latest_invoice.payment_date if latest_invoice else None
-        # This is a floor, not the true figure: it only sums credits for
-        # videos visible through this API key, but Synthesia bills credits
-        # against a shared pool that also covers dubbing, personalization,
-        # and re-renders, none of which show up in the videos list. Use
-        # connection.credits_used_override (copied by hand from the
-        # Synthesia dashboard) as the real number whenever it's set.
-        estimated_credits_used_this_cycle = None
-        videos_edited_this_cycle = []
-        if cycle_started_on:
-            cycle_start_iso = cycle_started_on.isoformat()
-            estimated_credits_used_this_cycle = sum(
-                video['credits_used'] or 0
-                for video in videos
-                if video['created_at'] and video['created_at'][:10] >= cycle_start_iso
-            )
-            # Editing an existing video (e.g. re-rendering a changed scene)
-            # consumes credits again without touching createdAt, so it's
-            # invisible to the sum above. Surfacing these separately at
-            # least explains where some of the gap to the real dashboard
-            # figure is likely coming from, even though the exact partial-
-            # render cost isn't available without Synthesia's audit logs.
-            videos_edited_this_cycle = [
-                {
-                    'video_id': video['video_id'],
-                    'title': video['title'],
-                    'last_updated_at': video['last_updated_at'],
-                    'duration_display': video['duration_display'],
-                    'credits_used': video['credits_used'],
-                }
-                for video in videos
-                if video['last_updated_at']
-                and video['last_updated_at'][:10] >= cycle_start_iso
-                and not (video['created_at'] and video['created_at'][:10] >= cycle_start_iso)
-            ]
+        estimated_credits_used_this_cycle, cycle_started_on, videos_edited_this_cycle = (
+            compute_synthesia_cycle_usage(connection, videos)
+        )
 
+        # Persist the freshly computed estimate so the stored figure stays
+        # current whenever anyone opens this page, on top of the scheduled
+        # `sync_synthesia_credits` run. Only stamp a sync time once there's a
+        # billing-cycle anchor (a logged invoice) to measure against.
+        if estimated_credits_used_this_cycle is not None and (
+            estimated_credits_used_this_cycle != connection.credits_used_estimated
+            or connection.credits_used_synced_at is None
+        ):
+            connection.credits_used_estimated = estimated_credits_used_this_cycle
+            connection.credits_used_synced_at = timezone.now()
+            connection.save(update_fields=['credits_used_estimated', 'credits_used_synced_at', 'updated_at'])
+
+        # The manual override wins over the auto estimate whenever it's set.
         credits_used_this_cycle = (
             connection.credits_used_override
             if connection.credits_used_override is not None
@@ -1301,7 +1790,27 @@ class SynthesiaViewSet(ViewSet):
                 'estimated_credits_used_this_cycle': estimated_credits_used_this_cycle,
                 'videos_edited_this_cycle': videos_edited_this_cycle,
                 'credits_used_override_at': connection.credits_used_override_at,
+                'credits_used_synced_at': connection.credits_used_synced_at,
                 'credits_remaining': credits_remaining,
+            }
+        )
+
+    @action(detail=False, methods=['post'], url_path='sync-credits')
+    def sync_credits(self, request):
+        connection, error = self._configured_connection()
+        if error:
+            return error
+        try:
+            estimated_credits_used, cycle_started_on = sync_synthesia_credits(connection)
+        except SynthesiaError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+        return Response(
+            {
+                'credits_used_estimated': estimated_credits_used,
+                'credits_used_synced_at': connection.credits_used_synced_at,
+                'billing_cycle_started_on': cycle_started_on,
+                'has_invoice_anchor': cycle_started_on is not None,
             }
         )
 
@@ -1324,22 +1833,34 @@ class SynthesiaInvoiceViewSet(ModelViewSet):
         serializer.save(connection=connection)
 
 
-TRELLIX_ID_KEYS = ('deviceId', 'DeviceId', 'systemId', 'SystemId', 'id', 'ID')
-TRELLIX_NAME_KEYS = ('deviceName', 'DeviceName', 'systemName', 'SystemName', 'hostName', 'HostName', 'name', 'Name')
-TRELLIX_SERIAL_KEYS = ('serialNumber', 'SerialNumber', 'serial', 'Serial')
-TRELLIX_PLATFORM_KEYS = ('platform', 'Platform', 'osType', 'OSType', 'os', 'OS', 'operatingSystem')
+TRELLIX_ID_KEYS = ('id', 'deviceId', 'DeviceId', 'systemId', 'SystemId', 'agentGuid', 'ID')
+TRELLIX_NAME_KEYS = ('name', 'computerName', 'deviceName', 'DeviceName', 'systemName', 'SystemName', 'hostName', 'HostName', 'Name')
+# Trellix's Devices API (/epo/v2/devices) returns the actual hardware serial
+# under systemSerialNumber - confirmed against a real response.
+TRELLIX_SERIAL_KEYS = ('systemSerialNumber', 'serialNumber', 'SerialNumber', 'serial', 'Serial')
+TRELLIX_PLATFORM_KEYS = ('osType', 'agentPlatform', 'platform', 'Platform', 'OSType', 'os', 'OS', 'operatingSystem')
 TRELLIX_OS_VERSION_KEYS = ('osVersion', 'OSVersion', 'version', 'Version')
 TRELLIX_IP_KEYS = ('ipAddress', 'IPAddress', 'ip', 'IP')
 TRELLIX_AGENT_VERSION_KEYS = ('agentVersion', 'AgentVersion', 'productVersion', 'ProductVersion')
-TRELLIX_LAST_COMM_KEYS = ('lastCommunication', 'LastCommunication', 'lastContact', 'LastContact', 'lastSeen', 'LastSeen')
-TRELLIX_THREAT_STATUS_KEYS = ('threatStatus', 'ThreatStatus', 'protectionStatus', 'ProtectionStatus', 'status', 'Status')
+TRELLIX_LAST_COMM_KEYS = ('lastUpdate', 'lastCommunication', 'LastCommunication', 'lastContact', 'LastContact', 'lastSeen', 'LastSeen')
+TRELLIX_MODEL_KEYS = ('systemModel', 'Model', 'model')
+TRELLIX_MANUFACTURER_KEYS = ('systemManufacturer', 'Manufacturer', 'manufacturer')
+TRELLIX_USER_KEYS = ('userName', 'UserName', 'user')
+# The Devices API carries agent-management state (managed/managedState), not
+# a malware/threat protection verdict - there is no threat-status field on
+# this resource. Real threat data belongs to the separate Events API
+# (epo.evt.r scope), so this only reports whether ePO manages the endpoint.
+TRELLIX_MANAGED_KEYS = ('managed', 'Managed')
 
-TRELLIX_EVENT_ID_KEYS = ('eventId', 'EventId', 'id', 'ID')
-TRELLIX_THREAT_NAME_KEYS = ('threatName', 'ThreatName', 'malwareName', 'MalwareName', 'detectionName', 'DetectionName')
-TRELLIX_THREAT_TYPE_KEYS = ('threatType', 'ThreatType', 'category', 'Category')
-TRELLIX_SEVERITY_KEYS = ('severity', 'Severity', 'threatSeverity', 'ThreatSeverity')
-TRELLIX_ACTION_KEYS = ('actionTaken', 'ActionTaken', 'action', 'Action')
-TRELLIX_DETECTED_AT_KEYS = ('detectedAt', 'DetectedAt', 'eventTime', 'EventTime', 'timestamp', 'Timestamp')
+# Confirmed against a real /epo/v2/events response - unlike Devices, these
+# attribute names are all lowercase, no camelCase.
+TRELLIX_EVENT_ID_KEYS = ('id', 'autoguid', 'eventId', 'EventId', 'ID')
+TRELLIX_EVENT_HOST_KEYS = ('analyzerhostname', 'sourcehostname', 'targethostname')
+TRELLIX_THREAT_NAME_KEYS = ('threatname', 'threatName', 'ThreatName', 'malwareName')
+TRELLIX_THREAT_TYPE_KEYS = ('threatcategory', 'threatType', 'ThreatType', 'category')
+TRELLIX_SEVERITY_KEYS = ('threatseverity', 'severity', 'Severity')
+TRELLIX_ACTION_KEYS = ('threatactiontaken', 'actionTaken', 'ActionTaken')
+TRELLIX_DETECTED_AT_KEYS = ('timestamp', 'detectedAt', 'DetectedAt', 'eventTime')
 
 
 def get_trellix_connection():
@@ -1360,6 +1881,8 @@ def get_trellix_client(connection):
 
 def normalize_trellix_device(device):
     device_id = device_value(device, *TRELLIX_ID_KEYS)
+    managed_value = str(device_value(device, *TRELLIX_MANAGED_KEYS)).strip()
+    managed_status = 'Managed' if managed_value == '1' else ('Unmanaged' if managed_value else 'Unknown')
     return {
         'trellix_device_id': str(device_id),
         'name': device_value(device, *TRELLIX_NAME_KEYS),
@@ -1369,17 +1892,27 @@ def normalize_trellix_device(device):
         'ip_address': device_value(device, *TRELLIX_IP_KEYS),
         'agent_version': device_value(device, *TRELLIX_AGENT_VERSION_KEYS),
         'last_communication': device_value(device, *TRELLIX_LAST_COMM_KEYS),
-        'threat_status': device_value(device, *TRELLIX_THREAT_STATUS_KEYS) or 'Unknown',
+        'model': device_value(device, *TRELLIX_MODEL_KEYS),
+        'manufacturer': device_value(device, *TRELLIX_MANUFACTURER_KEYS),
+        'user_name': device_value(device, *TRELLIX_USER_KEYS),
+        'managed_status': managed_status,
         'raw': device,
     }
+
+
+def _clean_event_text(value):
+    # Trellix uses degenerate placeholders ("_", a lone space) on
+    # operational events that carry no actual threat name/type.
+    text = str(value or '').strip(' _')
+    return text
 
 
 def normalize_trellix_threat_event(event):
     return {
         'event_id': str(device_value(event, *TRELLIX_EVENT_ID_KEYS)),
-        'device_name': device_value(event, *TRELLIX_NAME_KEYS),
-        'threat_name': device_value(event, *TRELLIX_THREAT_NAME_KEYS),
-        'threat_type': device_value(event, *TRELLIX_THREAT_TYPE_KEYS),
+        'device_name': device_value(event, *TRELLIX_EVENT_HOST_KEYS),
+        'threat_name': _clean_event_text(device_value(event, *TRELLIX_THREAT_NAME_KEYS)),
+        'threat_type': _clean_event_text(device_value(event, *TRELLIX_THREAT_TYPE_KEYS)),
         'severity': device_value(event, *TRELLIX_SEVERITY_KEYS),
         'action_taken': device_value(event, *TRELLIX_ACTION_KEYS),
         'detected_at': device_value(event, *TRELLIX_DETECTED_AT_KEYS),
@@ -1536,7 +2069,10 @@ class TrellixViewSet(ViewSet):
                         'ip_address': device['ip_address'],
                         'agent_version': device['agent_version'],
                         'last_communication': device['last_communication'],
-                        'threat_status': device['threat_status'],
+                        'model': device['model'],
+                        'manufacturer': device['manufacturer'],
+                        'user_name': device['user_name'],
+                        'managed_status': device['managed_status'],
                     },
                 }
                 _, was_created = Asset.objects.update_or_create(asset_id=asset_id, defaults=defaults)

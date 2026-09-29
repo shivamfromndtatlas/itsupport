@@ -22,6 +22,8 @@ import InventoryConfig from './pages/inventory/InventoryConfig';
 import AssetAllocation from './pages/allocation/AssetAllocation';
 import Tickets from './pages/tickets/Tickets';
 import Integrations from './pages/integrations/Integrations';
+import GoogleWorkspace from './pages/googleworkspace/GoogleWorkspace';
+import GoogleWorkspaceUser from './pages/googleworkspace/GoogleWorkspaceUser';
 import Organisations from './pages/organisations/Organisations';
 import ActivityLogs from './pages/activity/ActivityLogs';
 
@@ -183,6 +185,24 @@ function App() {
             element={
               <RoleRoute roles={['super_admin', 'it_specialist']}>
                 <Integrations />
+              </RoleRoute>
+            }
+          />
+
+          {/* Google Workspace directory - super_admin, it_specialist */}
+          <Route
+            path="/google-workspace"
+            element={
+              <RoleRoute roles={['super_admin', 'it_specialist']}>
+                <GoogleWorkspace />
+              </RoleRoute>
+            }
+          />
+          <Route
+            path="/google-workspace/users/:email"
+            element={
+              <RoleRoute roles={['super_admin', 'it_specialist']}>
+                <GoogleWorkspaceUser />
               </RoleRoute>
             }
           />

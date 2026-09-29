@@ -26,6 +26,7 @@ import {
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DataTable from '../../components/common/DataTable';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
 import api from '../../api/axios';
@@ -684,7 +685,36 @@ function Assets() {
   };
 
   const assetColumns = useMemo(() => [
-    { field: 'asset_id', headerName: 'Asset ID', width: 130 },
+    {
+      field: 'asset_id',
+      headerName: 'Asset ID',
+      width: 150,
+      renderCell: ({ value }) => (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+          <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {value}
+          </Box>
+          {value && (
+            <Tooltip title="Copy Asset ID">
+              <IconButton
+                size="small"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  try {
+                    await navigator.clipboard.writeText(String(value));
+                    showSnack('Asset ID copied.');
+                  } catch {
+                    showSnack('Copy failed.', 'error');
+                  }
+                }}
+              >
+                <ContentCopyIcon sx={{ fontSize: 15 }} />
+              </IconButton>
+            </Tooltip>
+          )}
+        </Box>
+      ),
+    },
     {
       field: 'organisation_detail',
       headerName: 'Organisation',

@@ -23,13 +23,18 @@ class TrellixClient:
 
     Auth is OAuth2 client-credentials against Trellix's IAM token endpoint
     (scoped per the Trellix Developer Portal's "API Access Requirements",
-    e.g. epo.device.r for the Devices API), then bearer-token calls to
-    api.manage.trellix.com carrying the tenant's x-api-key. The documented
-    ePO v2 routes (/epo/v2/...) return JSON:API-style {"data": [...]}
-    payloads, which _unwrap_jsonapi_list() flattens. Threat/event reporting
-    isn't covered by that same API family, so list_threat_events() also
-    tries a set of candidate paths and normalizes whichever responds first,
-    the same fallback approach used for SureMDM's installed_apps() above.
+    e.g. epo.device.r for Devices and epo.evt.r for Events), then bearer-token
+    calls to api.manage.trellix.com carrying the tenant's x-api-key. The ePO
+    v2 routes (/epo/v2/devices, /epo/v2/events - both confirmed against a
+    real tenant) return JSON:API-style {"data": [...]} payloads, which
+    _unwrap_jsonapi_list() flattens. The two routes paginate differently:
+    Devices uses offset pagination (page[limit]/page[offset] + a
+    meta.totalResourceCount), Events uses cursor pagination (a links.next
+    URL that already embeds the next page[cursor]) - handled by
+    _paginate_offset() and _paginate_cursor() respectively. If either
+    confirmed route ever fails outright (a non-auth error), list_devices()
+    falls back to a set of unconfirmed candidate paths, the same resilience
+    approach used for SureMDM's installed_apps() above.
     """
 
     def __init__(self, base_url, auth_url, client_id, client_secret, api_key, tenant_id='', scope='', timeout=20):
@@ -100,16 +105,15 @@ class TrellixClient:
     def _headers(self):
         # Per the Developer Portal's "API Access Information" sample call,
         # Trellix's ePO v2 API (JSON:API) requires this exact media type -
-        # a plain application/json Content-Type gets rejected.
-        headers = {
+        # a plain application/json Content-Type gets rejected. That sample
+        # call only sends these three headers (no tenant header), and this
+        # is a strict JSON:API server, so we don't add anything undocumented.
+        return {
             'Authorization': f'Bearer {self._access_token()}',
             'x-api-key': self.api_key,
             'Content-Type': 'application/vnd.api+json',
             'Accept': 'application/vnd.api+json',
         }
-        if self.tenant_id:
-            headers['x-tenant-id'] = self.tenant_id
-        return headers
 
     def _request(self, method, path, params=None, payload=None):
         url = urljoin(self.base_url, path.lstrip('/'))
@@ -201,28 +205,71 @@ class TrellixClient:
         detail = '; '.join(errors) if errors else 'no routes were attempted'
         raise TrellixError(f'None of the known Trellix {kind} routes responded successfully: {detail}')
 
-    def list_devices(self, limit=50):
-        params = {'tenantId': self.tenant_id, 'limit': limit} if self.tenant_id else {'limit': limit}
+    def _paginate_offset(self, path, limit=None, page_size=200):
+        """
+        Follow Devices-style offset pagination: page[limit]/page[offset],
+        stopping once meta.totalResourceCount is reached, a short page
+        signals the last one, or the caller's `limit` is satisfied.
+        """
+        results = []
+        offset = 0
+        total = None
+        while limit is None or len(results) < limit:
+            request_size = page_size if limit is None else min(page_size, limit - len(results))
+            _, data = self.get(path, {'page[limit]': request_size, 'page[offset]': offset})
+            page_items = self._unwrap_jsonapi_list(data)
+            if page_items is None:
+                return self._first_list(data, *self.LIST_KEYS)
+            results.extend(page_items)
+            if isinstance(data, dict) and isinstance(data.get('meta'), dict):
+                total = data['meta'].get('totalResourceCount', total)
+            offset += request_size
+            if len(page_items) < request_size:
+                break
+            if total is not None and len(results) >= total:
+                break
+        return results[:limit] if limit is not None else results
+
+    def _paginate_cursor(self, path, limit=None, page_size=100, extra_params=None):
+        """
+        Follow Events-style cursor pagination: the first request sets
+        page[limit] (plus any extra filter params), and each response's
+        links.next is a ready-made URL (path + query, cursor embedded) to
+        request as-is for the next page.
+        """
+        results = []
+        next_path = path
+        next_params = {'page[limit]': page_size, **(extra_params or {})}
+        while next_path and (limit is None or len(results) < limit):
+            _, data = self.get(next_path, next_params)
+            page_items = self._unwrap_jsonapi_list(data)
+            if page_items is None:
+                return self._first_list(data, *self.LIST_KEYS)
+            results.extend(page_items)
+            next_path = data.get('links', {}).get('next') if isinstance(data, dict) else None
+            next_params = None
+        return results[:limit] if limit is not None else results
+
+    def list_devices(self, limit=1000):
+        try:
+            return self._paginate_offset('epo/v2/devices', limit=limit)
+        except TrellixError as exc:
+            if exc.stage == 'auth':
+                raise
+
+        fallback_params = {'tenantId': self.tenant_id, 'limit': limit} if self.tenant_id else {'limit': limit}
         attempts = [
-            ('epo/v2/devices', params),
-            ('epo/v2/systemtree/systems', params),
-            ('epo/v2/systems', params),
-            ('mvision/v2/devices', params),
+            ('epo/v2/systemtree/systems', fallback_params),
+            ('epo/v2/systems', fallback_params),
+            ('mvision/v2/devices', fallback_params),
         ]
         return self._try_list_routes(attempts, 'endpoint-inventory')
 
-    def list_threat_events(self, limit=50, from_date=None, to_date=None):
-        params = {'limit': limit}
-        if self.tenant_id:
-            params['tenantId'] = self.tenant_id
-        if from_date:
-            params['fromDate'] = from_date
-        if to_date:
-            params['toDate'] = to_date
-
-        attempts = [
-            ('epo/v2/threat-events', params),
-            ('mvision/v2/deviceThreatEvents', params),
-            ('siem/v1/threat-events', params),
-        ]
-        return self._try_list_routes(attempts, 'threat-event')
+    def list_threat_events(self, limit=200, from_date=None, to_date=None):
+        # Date-range filtering isn't wired up: the Events API's filter query
+        # syntax (filter[...] JSON:API operators, presumably) isn't confirmed
+        # against a real response yet, and guessing at param names is what
+        # caused the Devices 400s earlier. from_date/to_date are accepted for
+        # a stable call signature but currently ignored - every event up to
+        # `limit` is returned, newest first per the API's own ordering.
+        return self._paginate_cursor('epo/v2/events', limit=limit)

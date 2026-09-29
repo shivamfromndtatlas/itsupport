@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from datetime import timedelta
 
@@ -131,3 +132,18 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# SureMDM device-location addresses: when SureMDM's own payload has no resolved
+# address, reverse-geocode the coordinates via OpenStreetMap Nominatim (results
+# are cached). Set SUREMDM_REVERSE_GEOCODE = False to disable the outbound call;
+# SUREMDM_GEOCODE_BUDGET caps live lookups per request (cache hits are free).
+SUREMDM_REVERSE_GEOCODE = os.environ.get('SUREMDM_REVERSE_GEOCODE', 'true').lower() != 'false'
+SUREMDM_GEOCODE_BUDGET = int(os.environ.get('SUREMDM_GEOCODE_BUDGET', '12'))
+
+# Asset dashboard: scrape Dell / Lenovo public support pages for a laptop's or
+# monitor's warranty entitlements and original shipped configuration, keyed by
+# service tag / serial number. Results are cached on AssetSupportInfo and only
+# refreshed on demand. Set VENDOR_SUPPORT_SCRAPE = False to disable the outbound
+# request; VENDOR_SUPPORT_TIMEOUT is the per-request timeout in seconds.
+VENDOR_SUPPORT_SCRAPE = os.environ.get('VENDOR_SUPPORT_SCRAPE', 'true').lower() != 'false'
+VENDOR_SUPPORT_TIMEOUT = int(os.environ.get('VENDOR_SUPPORT_TIMEOUT', '15'))

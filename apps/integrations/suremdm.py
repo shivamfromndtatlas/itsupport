@@ -145,6 +145,81 @@ class SureMDMClient:
         self.post('dynamicjob', payload)
         return True
 
+    def _location_points(self, data):
+        """
+        Flatten SureMDM's location responses into a flat list of point dicts.
+
+        SureMDM has shipped a few shapes for this across API versions:
+        - {"status": true, "data": [{"DeviceId": "..", "Location": [{...}]}]}
+        - {"DeviceId": "..", "Location": [{...}]}
+        - [{"DeviceId": "..", "Location": [{...}]}]
+        - a bare [{"Latitude": .., "Longitude": .., "Time": ".."}] list
+
+        Every returned point carries a "DeviceId" so callers can group points
+        back onto the device they came from.
+        """
+        if isinstance(data, dict):
+            if isinstance(data.get('data'), list):
+                entries = data['data']
+            elif isinstance(data.get('Location'), list):
+                entries = [data]
+            else:
+                entries = []
+        elif isinstance(data, list):
+            if data and isinstance(data[0], dict) and 'Location' in data[0]:
+                entries = data
+            else:
+                return [point for point in data if isinstance(point, dict)]
+        else:
+            entries = []
+
+        points = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            device_id = entry.get('DeviceId') or entry.get('DeviceID') or ''
+            for point in entry.get('Location') or []:
+                if not isinstance(point, dict):
+                    continue
+                point = dict(point)
+                point.setdefault('DeviceId', device_id)
+                points.append(point)
+        return points
+
+    def last_location(self, device_ids):
+        """
+        Fetch the last reported location for one or more devices
+        (POST /api/v2/location). SureMDM accepts a CSV of device IDs.
+        """
+        if isinstance(device_ids, str):
+            ids = device_ids
+        else:
+            ids = ','.join(str(device_id) for device_id in device_ids if device_id)
+        if not ids:
+            return []
+
+        _, data = self.post('v2/location', {'DeviceID': ids})
+        return self._location_points(data)
+
+    def location_history(self, device_id, from_time=None, to_time=None):
+        """
+        Fetch a device's recorded location trail for a window
+        (GET /api/v2/location). Location tracking has to already be enabled
+        on the device in SureMDM for this to return anything.
+
+        from_time / to_time are strings formatted 'YYYY-MM-DDTHH:MM:SS'.
+        """
+        if not device_id:
+            return []
+
+        params = {'DeviceID': device_id}
+        if from_time:
+            params['FromTime'] = from_time
+        if to_time:
+            params['ToTime'] = to_time
+        _, data = self.get('v2/location', params)
+        return self._location_points(data)
+
     def installed_apps(self, device_id):
         """
         Fetch installed applications for a device.

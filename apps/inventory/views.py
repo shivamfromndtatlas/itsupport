@@ -19,6 +19,7 @@ from apps.users.permissions import IsITOrHROrSuperAdmin, IsITSpecialistOrSuperAd
 from .models import (
     Asset,
     AssetAttribute,
+    AssetSupportInfo,
     AssetType,
     AssetTypeAttributeRequirement,
     InstalledApplication,
@@ -29,10 +30,12 @@ from .serializers import (
     AssetAttributeSerializer,
     AssetCreateSerializer,
     AssetSerializer,
+    AssetSupportInfoSerializer,
     AssetTypeSerializer,
     AssetTypeAttributeRequirementSerializer,
     SoftwareLicenseSerializer,
 )
+from .vendor_support import asset_supports_vendor_lookup, refresh_asset_support_info
 
 
 APP_NAME_KEYS = ('ApplicationName', 'AppName', 'Name', 'name', 'DisplayName', 'Title')
@@ -1101,6 +1104,14 @@ class AssetViewSet(viewsets.ModelViewSet):
             installed_apps[0].get('imported_at') if installed_apps_source == 'suremdm_sync' and installed_apps else None
         )
 
+        support_supported = asset_supports_vendor_lookup(asset)
+        support_info = AssetSupportInfo.objects.filter(asset=asset).first()
+        support_info_payload = {'supported': support_supported}
+        if support_info:
+            support_info_payload.update(AssetSupportInfoSerializer(support_info).data)
+        elif support_supported:
+            support_info_payload.update({'fetch_status': 'pending', 'warranty': {}, 'product_specifications': []})
+
         return Response(
             {
                 'asset': asset_data,
@@ -1127,8 +1138,45 @@ class AssetViewSet(viewsets.ModelViewSet):
                 'installed_apps_source': installed_apps_source,
                 'installed_apps_error': mdm_error,
                 'installed_apps_synced_at': installed_apps_synced_at,
+                'support_info': support_info_payload,
             }
         )
+
+    @action(detail=True, methods=['post'], url_path='refresh-support-info')
+    def refresh_support_info(self, request, pk=None):
+        """
+        Re-scrape Dell / Lenovo public support pages for this asset's warranty
+        and original configuration, and update the cached AssetSupportInfo.
+        """
+        asset = self.get_object()
+        if not asset_supports_vendor_lookup(asset):
+            return Response(
+                {'detail': 'Vendor support lookup is only available for laptops and monitors.'},
+                status=drf_status.HTTP_400_BAD_REQUEST,
+            )
+
+        device_context = None
+        try:
+            from apps.integrations.views import get_client, get_connection
+
+            connection = get_connection()
+            if connection and connection.is_active:
+                matched = find_matching_mdm_device(
+                    asset,
+                    asset.attribute_values or {},
+                    AssetSerializer(asset).data.get('attribute_values_with_names') or {},
+                    get_client(connection),
+                )
+                if matched:
+                    device_context = matched
+        except Exception:
+            device_context = None
+
+        info = refresh_asset_support_info(asset, device=device_context)
+        payload = {'supported': True, **AssetSupportInfoSerializer(info).data}
+        if info.fetch_status == 'error':
+            return Response(payload, status=drf_status.HTTP_502_BAD_GATEWAY)
+        return Response(payload)
 
 
 class AssetChoicesViewSet(viewsets.ViewSet):

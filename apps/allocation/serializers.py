@@ -53,6 +53,7 @@ class AssetAllocationSerializer(serializers.ModelSerializer):
 class LicenseAllocationSerializer(serializers.ModelSerializer):
     license_detail = SoftwareLicenseSerializer(source='license', read_only=True)
     employee_detail = EmployeeSerializer(source='employee', read_only=True)
+    asset_detail = AssetSerializer(source='asset', read_only=True)
     assigned_by_name = serializers.CharField(source='assigned_by.full_name', read_only=True)
     revoked_by_name = serializers.CharField(source='revoked_by.full_name', read_only=True)
 
@@ -64,6 +65,8 @@ class LicenseAllocationSerializer(serializers.ModelSerializer):
             'license_detail',
             'employee',
             'employee_detail',
+            'asset',
+            'asset_detail',
             'assigned_by',
             'assigned_by_name',
             'assigned_date',
@@ -85,5 +88,16 @@ class LicenseAllocationSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {
             'license': {'write_only': True},
-            'employee': {'write_only': True},
+            'employee': {'write_only': True, 'required': False, 'allow_null': True},
+            'asset': {'write_only': True, 'required': False, 'allow_null': True},
         }
+
+    def validate(self, attrs):
+        instance = getattr(self, 'instance', None)
+        employee = attrs.get('employee', getattr(instance, 'employee', None))
+        asset = attrs.get('asset', getattr(instance, 'asset', None))
+        if bool(employee) == bool(asset):
+            raise serializers.ValidationError(
+                'Provide either an employee or an asset for this licence allocation, not both.'
+            )
+        return attrs

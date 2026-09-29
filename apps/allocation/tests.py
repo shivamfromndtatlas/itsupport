@@ -163,6 +163,60 @@ class LicenseAllocationTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('license', response.data)
 
+    def test_assign_license_to_multiple_devices(self):
+        asset_type = AssetType.objects.create(name='Laptop', asset_type='hardware')
+        laptops = [
+            Asset.objects.create(asset_id=f'LT-{i}', asset_type=asset_type, status='assigned')
+            for i in range(3)
+        ]
+
+        response = self.client.post(
+            '/api/allocation/licenses/assign-devices/',
+            {
+                'license': self.license.id,
+                'asset_ids': [a.id for a in laptops],
+                'assigned_date': '2026-07-10',
+                'notes': 'Pre-installed on every laptop',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            LicenseAllocation.objects.filter(license=self.license, asset__isnull=False).count(), 3
+        )
+        self.assertFalse(
+            LicenseAllocation.objects.filter(license=self.license, employee__isnull=False).exists()
+        )
+        self.license.refresh_from_db()
+        self.assertEqual(self.license.available_seats, 2)
+
+    def test_device_assignment_skips_duplicates(self):
+        asset_type = AssetType.objects.create(name='Laptop', asset_type='hardware')
+        laptop = Asset.objects.create(asset_id='LT-DUP', asset_type=asset_type, status='assigned')
+        LicenseAllocation.objects.create(
+            license=self.license,
+            asset=laptop,
+            assigned_by=self.user,
+            assigned_date='2026-07-01',
+            status='active',
+        )
+        self.license.available_seats = 4
+        self.license.save(update_fields=['available_seats'])
+
+        response = self.client.post(
+            '/api/allocation/licenses/assign-devices/',
+            {
+                'license': self.license.id,
+                'asset_ids': [laptop.id],
+                'assigned_date': '2026-07-10',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(LicenseAllocation.objects.filter(asset=laptop).count(), 1)
+
     def test_unlimited_license_ignores_seat_count(self):
         unlimited_license = SoftwareLicense.objects.create(
             software_name='Adobe Reader',

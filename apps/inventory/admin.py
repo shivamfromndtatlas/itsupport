@@ -2,6 +2,7 @@ from django.contrib import admin
 from .models import (
     AssetType,
     AssetAttribute,
+    AssetSupportInfo,
     AssetTypeAttributeRequirement,
     Asset,
     InstalledApplication,
@@ -46,6 +47,14 @@ class SoftwareLicenseAdmin(admin.ModelAdmin):
     list_filter = ('status',)
     search_fields = ('software_name', 'vendor')
     readonly_fields = ('created_at', 'updated_at')
+
+
+@admin.register(AssetSupportInfo)
+class AssetSupportInfoAdmin(admin.ModelAdmin):
+    list_display = ('asset', 'manufacturer', 'service_tag', 'fetch_status', 'fetched_at')
+    list_filter = ('manufacturer', 'fetch_status')
+    search_fields = ('asset__asset_id', 'service_tag', 'product_name')
+    readonly_fields = ('created_at', 'updated_at', 'fetched_at', 'raw')
 
 
 @admin.register(InstalledAppReportImport)

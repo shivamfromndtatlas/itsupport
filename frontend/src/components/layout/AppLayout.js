@@ -37,6 +37,7 @@ import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
 import TuneIcon from '@mui/icons-material/Tune';
 import CloudSyncIcon from '@mui/icons-material/CloudSync';
+import GoogleIcon from '@mui/icons-material/Google';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import { useAuth } from '../../context/AuthContext';
 
@@ -80,6 +81,7 @@ const NAV_SECTIONS = [
       { label: 'SOP Management', icon: <MenuBookIcon sx={{ fontSize: 20 }} />, path: '/sop', roles: ['super_admin', 'it_specialist'] },
       { label: 'Inventory Config', icon: <TuneIcon sx={{ fontSize: 20 }} />, path: '/inventory/config', roles: ['super_admin', 'it_specialist'] },
       { label: 'Sure MDM', icon: <CloudSyncIcon sx={{ fontSize: 20 }} />, path: '/integrations', roles: ['super_admin', 'it_specialist'] },
+      { label: 'Google Workspace', icon: <GoogleIcon sx={{ fontSize: 20 }} />, path: '/google-workspace', roles: ['super_admin', 'it_specialist'] },
     ],
   },
   {
