@@ -84,7 +84,8 @@ export function useUserPhotos(users) {
       for (let i = 0; i < wanted.length && !cancelled; i += PHOTO_BATCH) {
         const batch = wanted.slice(i, i + PHOTO_BATCH);
         try {
-          const res = await api.get('/integrations/google-workspace/user-photos/', { params: { emails: batch.join(',') } });
+          // POST so the addresses go in the body: URLs end up in server logs.
+          const res = await api.post('/integrations/google-workspace/user-photos/', { emails: batch });
           Object.entries(res.data?.photos || {}).forEach(([email, photo]) => {
             // A failed fetch comes back null too; when the server reports an error, don't remember
             // those as "no picture", so a later visit retries.

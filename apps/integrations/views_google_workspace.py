@@ -175,20 +175,27 @@ class GoogleWorkspaceViewSet(ViewSet):
             'groups': sorted(groups_by_email.values(), key=lambda g: g['name'].lower()),
         })
 
-    @action(detail=False, methods=['get'], url_path='user-photos')
+    @action(detail=False, methods=['post'], url_path='user-photos')
     def user_photos(self, request):
         """
         Profile pictures for up to 50 users in one call, as ``{email: data-URI | null}``. Batched so
         the list page makes one request per page instead of one per row, and cached for an hour
         (pictures rarely change; a user without one is remembered too).
+
+        POST with the addresses in the body (``{"emails": [...]}``), not GET with a query string:
+        query strings are written to the server's request log and the portal's Activity Log, which
+        would list every employee's address on each page load.
         """
+        requested = request.data.get('emails') if hasattr(request.data, 'get') else None
+        if isinstance(requested, str):
+            requested = requested.split(',')
         emails = []
-        for part in (request.query_params.get('emails') or '').split(','):
-            part = part.strip().lower()
+        for part in requested if isinstance(requested, list) else []:
+            part = str(part).strip().lower()
             if '@' in part and part not in emails:
                 emails.append(part)
         if not emails:
-            return Response({'detail': 'An "emails" query parameter is required.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'A list of "emails" is required.'}, status=status.HTTP_400_BAD_REQUEST)
         if len(emails) > MAX_PHOTOS_PER_REQUEST:
             return Response(
                 {'detail': f'At most {MAX_PHOTOS_PER_REQUEST} emails per request.'}, status=status.HTTP_400_BAD_REQUEST

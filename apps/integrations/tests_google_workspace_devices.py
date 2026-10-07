@@ -450,7 +450,8 @@ class ProfilePhotoTests(APITestCase):
                 self.gw.user_photo('a@x.com')
 
     def get(self, emails):
-        return self.client.get(reverse('google-workspace-user-photos'), {'emails': emails})
+        # Comma string for convenience; the real client posts a list.
+        return self.client.post(reverse('google-workspace-user-photos'), {'emails': emails.split(',')}, format='json')
 
     def test_batch_returns_photos_null_for_none_and_for_unconnected_domains(self):
         def photo(self_, email):
@@ -500,8 +501,19 @@ class ProfilePhotoTests(APITestCase):
         with patch(f'{self.PATCH}.user_photo', return_value=None), patch(f'{self.PATCH}._token', return_value='tok'):
             self.assertEqual(self.get('a@ndtatlas.com').data['error'], '')
 
+    def test_addresses_are_never_put_in_the_url_so_they_stay_out_of_logs(self):
+        from apps.activity_log.models import ActivityLog
+        with patch(f'{self.PATCH}.user_photo', return_value=None), patch(f'{self.PATCH}._token', return_value='tok'):
+            self.get('a@ndtatlas.com,b@ndtatlas.com')
+        # GET is no longer accepted, and nothing recorded for the request carries an address.
+        self.assertEqual(self.client.get(reverse('google-workspace-user-photos'), {'emails': 'a@ndtatlas.com'}).status_code, 405)
+        for entry in ActivityLog.objects.filter(path__endswith='/user-photos/'):
+            self.assertNotIn('@', entry.metadata.get('query_string', ''))
+            self.assertNotIn('@', entry.path)
+
     def test_validation_and_permissions(self):
-        self.assertEqual(self.client.get(reverse('google-workspace-user-photos')).status_code, 400)
+        self.assertEqual(self.client.post(reverse('google-workspace-user-photos'), {}, format='json').status_code, 400)
+        self.assertEqual(self.client.post(reverse('google-workspace-user-photos'), {'emails': 'not-a-list-of-emails'}, format='json').status_code, 400)
         self.assertEqual(self.get('not-an-email').status_code, 400)
         too_many = ','.join(f'u{i}@ndtatlas.com' for i in range(51))
         self.assertEqual(self.get(too_many).status_code, 400)
