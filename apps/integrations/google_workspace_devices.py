@@ -103,6 +103,8 @@ def _base_row(source):
         'user_agent': '',
         'device_id': '',
         'users': [],
+        # email -> when that user's account last synced on this device (a device can have several users).
+        'user_syncs': {},
     }
 
 
@@ -122,6 +124,7 @@ def normalize_mobile_device(raw):
         'device_id': _text(raw.get('resourceId') or raw.get('deviceId')),
         'users': sorted({_text(e).lower() for e in raw.get('email') or [] if _text(e)}),
     })
+    row['user_syncs'] = {email: row['last_sync'] for email in row['users'] if row['last_sync']}
     return _finish(row)
 
 
@@ -143,6 +146,8 @@ def normalize_cloud_device(device, device_user):
         'device_id': _text(device.get('name')),
         'users': [_text(device_user.get('userEmail')).lower()] if _text(device_user.get('userEmail')) else [],
     })
+    if row['users'] and row['last_sync']:
+        row['user_syncs'] = {row['users'][0]: row['last_sync']}
     return _finish(row)
 
 
@@ -170,6 +175,11 @@ def cloud_fleet_devices(snapshot):
         newest = max(users, key=lambda u: _text(u.get('lastSyncTime')))
         row = normalize_cloud_device(snapshot['devices'].get(name) or {'name': name}, newest)
         row['users'] = sorted({_text(u.get('userEmail')).lower() for u in users if _text(u.get('userEmail'))})
+        row['user_syncs'] = {
+            _text(u.get('userEmail')).lower(): _text(u.get('lastSyncTime') or (snapshot['devices'].get(name) or {}).get('lastSyncTime'))
+            for u in users
+            if _text(u.get('userEmail')) and (u.get('lastSyncTime') or (snapshot['devices'].get(name) or {}).get('lastSyncTime'))
+        }
         row['first_seen'] = min(
             (_text(u.get('createTime') or u.get('firstSyncTime')) for u in users if u.get('createTime') or u.get('firstSyncTime')),
             default='',
@@ -186,6 +196,12 @@ def _merge(first, second):
             merged['sources'] = sorted(set(first['sources']) | set(value))
         elif key == 'users':
             merged['users'] = sorted(set(first['users']) | set(value))
+        elif key == 'user_syncs':
+            # Per user, keep the newer of the two sources' times (ISO timestamps sort as text).
+            merged['user_syncs'] = {
+                email: max(first['user_syncs'].get(email, ''), value.get(email, ''))
+                for email in set(first['user_syncs']) | set(value)
+            }
         elif not merged.get(key):
             merged[key] = value
     return _finish(merged)

@@ -56,6 +56,7 @@ import {
 } from './shared';
 
 const DIRECTORY_URL = '/integrations/google-workspace/directory/';
+const DEVICES_URL = '/integrations/google-workspace/devices/';
 
 const roleColor = (role) => {
   if (role === 'OWNER') return 'primary';
@@ -70,15 +71,16 @@ const csvCell = (value) => {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 
-const exportCsv = (users) => {
+const exportCsv = (users, deviceSync) => {
   const header = [
     'Full name', 'Primary email', 'Aliases', 'Domain', 'Org unit', 'Title', 'Department', 'Employee ID',
-    'Manager', 'Status', 'Admin', '2-Step enrolled', 'Created', 'Last sign-in', 'Groups',
+    'Manager', 'Status', 'Admin', '2-Step enrolled', 'Created', 'Last sign-in', 'Last device sync', 'Groups',
   ];
   const rows = users.map((user) => [
     user.full_name, user.primary_email, user.aliases.join('; '), user.domain, user.org_unit, user.title,
     user.department, user.employee_id, user.manager, statusOf(user).label, adminLabel(user),
     user.is_enrolled_in_2sv ? 'Yes' : 'No', user.created_at, user.last_login_at || 'Never',
+    (deviceSync || {})[user.primary_email.toLowerCase()] || '',
     user.groups.map((group) => group.email).join('; '),
   ]);
   const csv = [header, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
@@ -222,6 +224,8 @@ function GoogleWorkspace() {
   const openDashboard = (user) => navigate(userDashboardPath(user.primary_email), { state: { user } });
   const [data, setData] = useState(null);
   const photoOf = useUserPhotos(data?.users);
+  // email -> most recent device sync; null while loading, {} if devices can't be read (column shows a dash).
+  const [deviceSync, setDeviceSync] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [connectionsOpen, setConnectionsOpen] = useState(false);
@@ -238,6 +242,20 @@ function GoogleWorkspace() {
     try {
       const res = await api.get(DIRECTORY_URL, { params: refresh ? { refresh: 1 } : {} });
       setData(res.data);
+      // Not awaited: the list shows straight away and the column fills in when devices arrive.
+      setDeviceSync(null);
+      api
+        .get(DEVICES_URL, { params: refresh ? { refresh: 1 } : {} })
+        .then((devicesRes) => {
+          const latest = {};
+          (devicesRes.data?.devices || []).forEach((device) => {
+            Object.entries(device.user_syncs || {}).forEach(([email, time]) => {
+              if (time && time > (latest[email] || '')) latest[email] = time;
+            });
+          });
+          setDeviceSync(latest);
+        })
+        .catch(() => setDeviceSync({}));
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to load the Google Workspace directory.');
     } finally {
@@ -370,6 +388,26 @@ function GoogleWorkspace() {
       valueGetter: (value) => (value ? formatDateTime(value) : 'Never'),
     },
     {
+      field: 'last_device_sync',
+      headerName: 'Last sync',
+      type: 'dateTime',
+      flex: 0.9,
+      minWidth: 150,
+      // Latest check-in across the user's registered devices, not the last time they used the account.
+      valueGetter: (value, row) => {
+        const time = deviceSync?.[row.primary_email.toLowerCase()];
+        return time ? new Date(time) : null;
+      },
+      renderCell: ({ row, value }) => {
+        if (value) return formatDateTime(value);
+        return (
+          <Typography variant="body2" color="text.secondary">
+            {deviceSync === null ? '…' : '—'}
+          </Typography>
+        );
+      },
+    },
+    {
       field: 'groups',
       headerName: 'Groups',
       flex: 2,
@@ -417,7 +455,7 @@ function GoogleWorkspace() {
             variant="outlined"
             size="small"
             startIcon={<DownloadIcon />}
-            onClick={() => exportCsv(filteredUsers)}
+            onClick={() => exportCsv(filteredUsers, deviceSync)}
             disabled={!filteredUsers.length}
           >
             Export CSV

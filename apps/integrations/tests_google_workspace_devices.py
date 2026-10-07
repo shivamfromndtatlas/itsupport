@@ -129,6 +129,23 @@ class MergeTests(APITestCase):
         # Different models are different devices.
         self.assertEqual(len(merge_devices([mobile('Pixel 8'), cloud('Galaxy S23')])), 2)
 
+    def test_per_user_sync_times_are_kept_and_the_newer_one_wins_when_merging(self):
+        from .google_workspace_devices import cloud_fleet_devices
+        snapshot = {
+            'devices': {'devices/d1': cloud_device(serialNumber='SN1')},
+            'device_users': [
+                device_user('asha@ndtatlas.com', 'd1', lastSyncTime='2026-09-01T00:00:00Z'),
+                device_user('ravi@ndtatlas.com', 'd1', lastSyncTime='2026-10-01T00:00:00Z'),
+            ],
+        }
+        [cloud] = cloud_fleet_devices(snapshot)
+        self.assertEqual(cloud['user_syncs'], {'asha@ndtatlas.com': '2026-09-01T00:00:00Z', 'ravi@ndtatlas.com': '2026-10-01T00:00:00Z'})
+
+        mobile = normalize_mobile_device({'type': 'ANDROID', 'serialNumber': 'SN1', 'email': ['Asha@ndtatlas.com'], 'lastSync': '2026-10-05T00:00:00Z'})
+        [merged] = merge_devices([cloud, mobile])
+        self.assertEqual(merged['user_syncs']['asha@ndtatlas.com'], '2026-10-05T00:00:00Z')  # newer, from the other source
+        self.assertEqual(merged['user_syncs']['ravi@ndtatlas.com'], '2026-10-01T00:00:00Z')
+
     def test_newest_sync_first(self):
         old = normalize_cloud_device(cloud_device(serialNumber='A'), device_user(lastSyncTime='2026-01-01T00:00:00Z'))
         new = normalize_cloud_device(cloud_device(serialNumber='B'), device_user(device='d2', lastSyncTime='2026-09-01T00:00:00Z'))
