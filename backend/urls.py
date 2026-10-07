@@ -3,6 +3,8 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
+from .dashboard import dashboard_overview
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/', include('apps.users.urls')),
@@ -15,4 +17,5 @@ urlpatterns = [
     path('api/tickets/', include('apps.tickets.urls')),
     path('api/integrations/', include('apps.integrations.urls')),
     path('api/activity-log/', include('apps.activity_log.urls')),
+    path('api/dashboard/overview/', dashboard_overview, name='dashboard-overview'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

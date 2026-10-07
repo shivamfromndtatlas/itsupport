@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Box,
@@ -1217,8 +1218,13 @@ function SureMDMPanel() {
   );
 }
 
+const INTEGRATION_TABS = ['suremdm', 'trellix', 'synthesia', 'teamviewer', 'dell'];
+
 function Integrations() {
-  const [tab, setTab] = useState('suremdm');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const tab = INTEGRATION_TABS.includes(requestedTab) ? requestedTab : 'suremdm';
+  const setTab = (value) => setSearchParams({ tab: value }, { replace: true });
 
   return (
     <Box>
