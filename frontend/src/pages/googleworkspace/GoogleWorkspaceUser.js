@@ -30,7 +30,8 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import { DataGrid } from '@mui/x-data-grid';
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from 'recharts';
 import api from '../../api/axios';
-import { StatCard, adminLabel, formatDateTime, gridSx, initialsOf, statusOf } from './shared';
+import UserDevicesPanel from './UserDevicesPanel';
+import { StatCard, adminLabel, formatDateTime, gridSx, initialsOf, statusOf, useUserPhotos } from './shared';
 
 const BASE = '/integrations/google-workspace';
 const RANGES = [7, 30, 90];
@@ -213,7 +214,11 @@ function GoogleWorkspaceUser() {
   }, [email, stateUser]);
   const profile = stateUser || (fetched.email === email ? fetched.user : null);
   const profileLoading = !stateUser && fetched.email !== email;
+  const profileList = useMemo(() => (profile ? [profile] : []), [profile]);
+  const photoOf = useUserPhotos(profileList);
 
+  // Not period-based, so the fixed 30 keeps it from refetching when the Period picker changes.
+  const devices = useReport('user-devices', email, 30, nonce);
   const drive = useReport('user-drive', email, days, nonce);
   const signins = useReport('user-signins', email, days, nonce);
   const usage = useReport('user-email-usage', email, days, nonce);
@@ -407,7 +412,7 @@ function GoogleWorkspaceUser() {
       <Card sx={{ borderRadius: 2, boxShadow: 2, mb: 2.5 }}>
         <CardContent sx={{ p: { xs: 2, md: 3 } }}>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }}>
-            <Avatar sx={{ width: 56, height: 56, bgcolor: 'primary.main', fontSize: 20 }}>
+            <Avatar src={photoOf(email)} alt={profile?.full_name} sx={{ width: 56, height: 56, bgcolor: 'primary.main', fontSize: 20 }}>
               {initialsOf(profile || { primary_email: email })}
             </Avatar>
             <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -475,6 +480,10 @@ function GoogleWorkspaceUser() {
           hint={signins.data ? `${signins.data.summary.signins} successful` : undefined}
         />
       </Box>
+
+      <Panel title="Devices">
+        <UserDevicesPanel report={devices} />
+      </Panel>
 
       <Panel title="Email">
         {usage.loading && <Loading label="Reading daily email counts from Google…" />}

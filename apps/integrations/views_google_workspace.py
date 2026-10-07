@@ -1,4 +1,5 @@
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
@@ -9,9 +10,17 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet, ViewSet
 
+from apps.inventory.models import Asset
 from apps.users.permissions import IsITSpecialistOrSuperAdmin
 
 from .google_workspace import GoogleWorkspaceClient, GoogleWorkspaceError, build_directory
+from .google_workspace_devices import (
+    apply_portal_assets,
+    cloud_devices_for_user,
+    cloud_fleet_devices,
+    merge_devices,
+    normalize_mobile_device,
+)
 from .google_workspace_activity import (
     DRIVE_SHARE_EVENTS,
     normalize_drive_events,
@@ -21,11 +30,17 @@ from .google_workspace_activity import (
 )
 from .models import GoogleWorkspaceConnection
 from .serializers import GoogleWorkspaceConnectionSerializer
+from .views import is_laptop_asset
 
 # Loading a directory is one request per group, so results are held briefly and
 # the UI's Refresh button passes ?refresh=1 to bypass this.
 DIRECTORY_CACHE_SECONDS = 600
 ACTIVITY_CACHE_SECONDS = 300
+logger = logging.getLogger(__name__)
+PHOTO_CACHE_SECONDS = 3600
+MAX_PHOTOS_PER_REQUEST = 50
+PHOTO_FETCH_WORKERS = 8
+SOURCE_LABELS = {'mobile': 'Mobile devices', 'cloud_identity': 'Computers'}
 ACTIVITY_DAYS = (7, 30, 90)
 DEFAULT_ACTIVITY_DAYS = 30
 # Google requires a Gmail audit window of at most 30 days.
@@ -160,27 +175,189 @@ class GoogleWorkspaceViewSet(ViewSet):
             'groups': sorted(groups_by_email.values(), key=lambda g: g['name'].lower()),
         })
 
+    @action(detail=False, methods=['get'], url_path='user-photos')
+    def user_photos(self, request):
+        """
+        Profile pictures for up to 50 users in one call, as ``{email: data-URI | null}``. Batched so
+        the list page makes one request per page instead of one per row, and cached for an hour
+        (pictures rarely change; a user without one is remembered too).
+        """
+        emails = []
+        for part in (request.query_params.get('emails') or '').split(','):
+            part = part.strip().lower()
+            if '@' in part and part not in emails:
+                emails.append(part)
+        if not emails:
+            return Response({'detail': 'An "emails" query parameter is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(emails) > MAX_PHOTOS_PER_REQUEST:
+            return Response(
+                {'detail': f'At most {MAX_PHOTOS_PER_REQUEST} emails per request.'}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        connections = {
+            c.domain: c
+            for c in GoogleWorkspaceConnection.objects.filter(is_active=True).exclude(service_account_json='')
+        }
+        photos, pending = {}, []
+        for email in emails:
+            connection = connections.get(email.rsplit('@', 1)[1])
+            if not connection:
+                photos[email] = None
+                continue
+            cached = cache.get(f'google-workspace:photo:{connection.pk}:{email}')
+            if cached is None:
+                pending.append((email, connection))
+            else:
+                photos[email] = cached or None  # '' remembers "no picture"
+
+        clients = {}
+        for _, connection in pending:
+            if connection.pk not in clients:
+                client = get_google_workspace_client(connection)
+                try:
+                    client._token()  # authenticate once up front instead of racing in the pool
+                except GoogleWorkspaceError as exc:
+                    clients[connection.pk] = exc
+                    continue
+                clients[connection.pk] = client
+
+        errors = []
+
+        def fetch(item):
+            email, connection = item
+            client = clients[connection.pk]
+            if isinstance(client, GoogleWorkspaceError):
+                errors.append(str(client))
+                return email, connection, None, False
+            try:
+                return email, connection, client.user_photo(email), True
+            except GoogleWorkspaceError as exc:
+                # Show initials and don't remember it, but keep the reason so the page can say why.
+                errors.append(str(exc))
+                logger.warning('Could not fetch the Google profile photo for %s: %s', email, exc)
+                return email, connection, None, False
+
+        if pending:
+            with ThreadPoolExecutor(max_workers=PHOTO_FETCH_WORKERS) as pool:
+                for email, connection, photo, definitive in pool.map(fetch, pending):
+                    photos[email] = photo
+                    if definitive:
+                        cache.set(f'google-workspace:photo:{connection.pk}:{email}', photo or '', PHOTO_CACHE_SECONDS)
+        return Response({'photos': photos, 'error': errors[0] if errors else ''})
+
+    @action(detail=False, methods=['get'], url_path='devices')
+    def devices(self, request):
+        """
+        Every registered device across the connected accounts, with the users signed in on each.
+        Same two Google sources as the per-user view; the cloud fleet snapshot is shared with it.
+        """
+        refresh = request.query_params.get('refresh') in ('1', 'true')
+        connections = list(GoogleWorkspaceConnection.objects.filter(is_active=True).exclude(service_account_json=''))
+        rows, source_status, seen = [], {}, set()
+
+        def load(connection):
+            client = get_google_workspace_client(connection)
+            fleet_key = f'google-workspace:cloud-devices:{connection.pk}'
+            mobile_key = f'google-workspace:mobile-devices:{connection.pk}'
+
+            def cloud():
+                snapshot = None if refresh else cache.get(fleet_key)
+                if snapshot is None:
+                    snapshot = client.cloud_identity_devices()
+                    cache.set(fleet_key, snapshot, DIRECTORY_CACHE_SECONDS)
+                return cloud_fleet_devices(snapshot)
+
+            def mobile():
+                raw = None if refresh else cache.get(mobile_key)
+                if raw is None:
+                    raw = client.list_all_mobile_devices()
+                    cache.set(mobile_key, raw, DIRECTORY_CACHE_SECONDS)
+                return [normalize_mobile_device(item) for item in raw]
+
+            def run(name, fn):
+                try:
+                    return name, fn(), ''
+                except GoogleWorkspaceError as exc:
+                    return name, [], str(exc)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                return connection, list(pool.map(lambda job: run(*job), (('mobile', mobile), ('cloud_identity', cloud))))
+
+        if connections:
+            with ThreadPoolExecutor(max_workers=len(connections)) as pool:
+                loaded = list(pool.map(load, connections))
+        else:
+            loaded = []
+
+        for connection, results in loaded:
+            for name, found, err in results:
+                entry = source_status.setdefault(name, {'ok': True, 'errors': [], 'count': 0})
+                if err:
+                    entry['ok'] = False
+                    entry['errors'].append(f'{connection.domain}: {err}')
+                for row in found:
+                    # Two domains in one Google account return the same devices; count each once.
+                    identity = (name, row['device_id'])
+                    if row['device_id'] and identity in seen:
+                        continue
+                    seen.add(identity)
+                    rows.append(row)
+                    entry['count'] += 1
+
+        if connections and source_status and not any(s['ok'] for s in source_status.values()):
+            detail = ' '.join(f'{SOURCE_LABELS[n]}: {" ".join(s["errors"])}' for n, s in source_status.items())
+            return Response({'detail': detail}, status=UPSTREAM_ERROR_STATUS)
+
+        merged = merge_devices(rows)
+        serials = {d['serial'] for d in merged if d['serial']}
+        assets = Asset.objects.filter(serial_number__in=serials).select_related('asset_type') if serials else []
+        by_serial = {}
+        for asset in assets:
+            by_serial.setdefault(asset.serial_number.strip().upper(), asset)
+        devices = apply_portal_assets(merged, by_serial, is_laptop_asset)
+        return Response({
+            'devices': devices,
+            'sources': {n: {'ok': s['ok'], 'error': ' '.join(s['errors']), 'count': s['count']} for n, s in source_status.items()},
+            'summary': {
+                'total': len(devices),
+                'mobile': sum(1 for d in devices if d['category'] == 'mobile'),
+                'laptops': sum(1 for d in devices if d.get('form_factor') == 'laptop'),
+                'other_computers': sum(1 for d in devices if d['category'] == 'computer' and d.get('form_factor') != 'laptop'),
+                'in_portal': sum(1 for d in devices if d['portal_asset']),
+            },
+        })
+
     # -- Per-user activity ---------------------------------------------------
     # Each panel of the user dashboard has its own endpoint so one report being
     # unavailable (edition, missing scope) doesn't blank the others. The person is
     # named in the query string, which the portal's ActivityLogMiddleware records,
     # so who looked at whose activity lands in the Activity Log automatically.
 
-    def _cached_activity(self, request, kind, compute):
+    @staticmethod
+    def _resolve_user(request):
+        """``(email, connection, error_response)``: the user asked about and the connection for their domain."""
         email = (request.query_params.get('email') or '').strip().lower()
         if '@' not in email:
-            return Response({'detail': 'An "email" query parameter is required.'}, status=status.HTTP_400_BAD_REQUEST)
+            return email, None, Response({'detail': 'An "email" query parameter is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        domain = email.rsplit('@', 1)[1]
+        connection = GoogleWorkspaceConnection.objects.filter(is_active=True, domain=domain).exclude(service_account_json='').first()
+        if not connection:
+            return email, None, Response(
+                {'detail': f'{domain} is not a connected Google Workspace domain.'}, status=status.HTTP_404_NOT_FOUND
+            )
+        return email, connection, None
+
+    def _cached_activity(self, request, kind, compute):
+        email, connection, error = self._resolve_user(request)
+        if error:
+            return error
         try:
             days = int(request.query_params.get('days', DEFAULT_ACTIVITY_DAYS))
         except ValueError:
             days = DEFAULT_ACTIVITY_DAYS
         if days not in ACTIVITY_DAYS:
             days = DEFAULT_ACTIVITY_DAYS
-
-        domain = email.rsplit('@', 1)[1]
-        connection = GoogleWorkspaceConnection.objects.filter(is_active=True, domain=domain).exclude(service_account_json='').first()
-        if not connection:
-            return Response({'detail': f'{domain} is not a connected Google Workspace domain.'}, status=status.HTTP_404_NOT_FOUND)
+        domain = connection.domain
 
         refresh = request.query_params.get('refresh') in ('1', 'true')
         key = f'google-workspace:{kind}:{connection.pk}:{email}:{days}'
@@ -196,6 +373,78 @@ class GoogleWorkspaceViewSet(ViewSet):
                 return Response({'detail': str(exc)}, status=UPSTREAM_ERROR_STATUS)
             cache.set(key, payload, ACTIVITY_CACHE_SECONDS)
         return Response(payload)
+
+    @action(detail=False, methods=['get'], url_path='user-devices')
+    def user_devices(self, request):
+        """
+        Devices the user has signed in to their Google account on: make, model, serial number,
+        platform and laptop / mobile. Each Google source is read independently, so one being
+        unavailable (scope not delegated, API not enabled) still shows what the other found.
+        """
+        email, connection, error = self._resolve_user(request)
+        if error:
+            return error
+        refresh = request.query_params.get('refresh') in ('1', 'true')
+        key = f'google-workspace:devices:{connection.pk}:{email}'
+        payload = None if refresh else cache.get(key)
+
+        if payload is None:
+            client = get_google_workspace_client(connection)
+            fleet_key = f'google-workspace:cloud-devices:{connection.pk}'
+
+            def mobile():
+                return [normalize_mobile_device(raw) for raw in client.list_mobile_devices(email)]
+
+            def cloud():
+                # Whole-fleet read (cloud identity can't filter by user), shared by every user's page.
+                snapshot = None if refresh else cache.get(fleet_key)
+                if snapshot is None:
+                    snapshot = client.cloud_identity_devices()
+                    cache.set(fleet_key, snapshot, DIRECTORY_CACHE_SECONDS)
+                return cloud_devices_for_user(snapshot, email)
+
+            def run(name, load):
+                try:
+                    rows = load()
+                    return name, rows, ''
+                except GoogleWorkspaceError as exc:
+                    return name, [], str(exc)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda job: run(*job), (('mobile', mobile), ('cloud_identity', cloud))))
+
+            sources = {name: {'ok': not err, 'error': err, 'count': len(rows)} for name, rows, err in results}
+            if not any(source['ok'] for source in sources.values()):
+                detail = ' '.join(
+                    f'{label}: {sources[name]["error"]}'
+                    for name, label in (('mobile', 'Mobile devices'), ('cloud_identity', 'Computers'))
+                )
+                return Response({'detail': detail}, status=UPSTREAM_ERROR_STATUS)
+            payload = {
+                'devices': merge_devices([row for _, rows, _ in results for row in rows]),
+                'sources': sources,
+            }
+            cache.set(key, payload, ACTIVITY_CACHE_SECONDS)
+
+        # Portal assets change independently of Google, so they are matched on every request, not cached.
+        serials = {device['serial'] for device in payload['devices'] if device['serial']}
+        assets = Asset.objects.filter(serial_number__in=serials).select_related('asset_type') if serials else []
+        by_serial = {}
+        for asset in assets:
+            by_serial.setdefault(asset.serial_number.strip().upper(), asset)
+        devices = apply_portal_assets(payload['devices'], by_serial, is_laptop_asset)
+        return Response({
+            'devices': devices,
+            'sources': payload['sources'],
+            'summary': {
+                'total': len(devices),
+                'mobile': sum(1 for d in devices if d['category'] == 'mobile'),
+                'laptops': sum(1 for d in devices if d.get('form_factor') == 'laptop'),
+                'other_computers': sum(
+                    1 for d in devices if d['category'] == 'computer' and d.get('form_factor') != 'laptop'
+                ),
+            },
+        })
 
     @action(detail=False, methods=['get'], url_path='user-drive')
     def user_drive(self, request):

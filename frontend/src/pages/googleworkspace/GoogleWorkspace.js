@@ -34,6 +34,7 @@ import {
 import ClearIcon from '@mui/icons-material/Clear';
 import CloseIcon from '@mui/icons-material/Close';
 import DownloadIcon from '@mui/icons-material/Download';
+import DevicesIcon from '@mui/icons-material/Devices';
 import GoogleIcon from '@mui/icons-material/Google';
 import InsightsIcon from '@mui/icons-material/Insights';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -50,6 +51,7 @@ import {
   gridSx,
   initialsOf,
   statusOf,
+  useUserPhotos,
   userDashboardPath,
 } from './shared';
 
@@ -103,7 +105,7 @@ function DetailField({ label, children }) {
   );
 }
 
-function UserDialog({ user, onClose, onOpenDashboard }) {
+function UserDialog({ user, photo, onClose, onOpenDashboard }) {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const status = user ? statusOf(user) : null;
@@ -114,7 +116,9 @@ function UserDialog({ user, onClose, onOpenDashboard }) {
         <>
           <DialogTitle>
             <Stack direction="row" alignItems="center" spacing={1.5}>
-              <Avatar sx={{ bgcolor: 'primary.main' }}>{initialsOf(user)}</Avatar>
+              <Avatar src={photo} alt={user.full_name} sx={{ bgcolor: 'primary.main' }}>
+                {initialsOf(user)}
+              </Avatar>
               <Box sx={{ minWidth: 0, flex: 1 }}>
                 <Typography variant="h6" fontWeight={800} noWrap>
                   {user.full_name || user.primary_email}
@@ -217,6 +221,7 @@ function GoogleWorkspace() {
   // Passing the row along lets the dashboard show the profile without refetching the directory.
   const openDashboard = (user) => navigate(userDashboardPath(user.primary_email), { state: { user } });
   const [data, setData] = useState(null);
+  const photoOf = useUserPhotos(data?.users);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [connectionsOpen, setConnectionsOpen] = useState(false);
@@ -305,7 +310,9 @@ function GoogleWorkspace() {
       minWidth: 190,
       renderCell: ({ row }) => (
         <Stack direction="row" alignItems="center" spacing={1.25} sx={{ minWidth: 0 }}>
-          <Avatar sx={{ width: 28, height: 28, fontSize: 12, bgcolor: 'primary.main' }}>{initialsOf(row)}</Avatar>
+          <Avatar src={photoOf(row.primary_email)} alt={row.full_name} sx={{ width: 28, height: 28, fontSize: 12, bgcolor: 'primary.main' }}>
+            {initialsOf(row)}
+          </Avatar>
           <Typography variant="body2" fontWeight={700} noWrap>
             {row.full_name || '—'}
           </Typography>
@@ -400,6 +407,9 @@ function GoogleWorkspace() {
           </Typography>
         </Box>
         <Stack direction="row" spacing={1}>
+          <Button variant="outlined" size="small" startIcon={<DevicesIcon />} onClick={() => navigate('/google-workspace/devices')}>
+            All devices
+          </Button>
           <Button variant="outlined" size="small" startIcon={<SettingsIcon />} onClick={() => setConnectionsOpen(true)}>
             Domains
           </Button>
@@ -444,6 +454,12 @@ function GoogleWorkspace() {
           <b>{domain.domain}</b> couldn&apos;t be loaded: {domain.error}
         </Alert>
       ))}
+
+      {photoOf.error && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Profile photos could not be loaded, so initials are shown: {photoOf.error}
+        </Alert>
+      )}
 
       {unreadableGroups > 0 && (
         <Alert severity="info" sx={{ mb: 2 }}>
@@ -564,7 +580,7 @@ function GoogleWorkspace() {
         </>
       )}
 
-      <UserDialog user={selectedUser} onClose={() => setSelectedUser(null)} onOpenDashboard={openDashboard} />
+      <UserDialog user={selectedUser} photo={photoOf(selectedUser?.primary_email)} onClose={() => setSelectedUser(null)} onOpenDashboard={openDashboard} />
       <GoogleWorkspaceConnections
         open={connectionsOpen}
         onClose={() => setConnectionsOpen(false)}

@@ -44,6 +44,12 @@ export const ACTIVITY_SCOPES = [
   'https://www.googleapis.com/auth/admin.reports.usage.readonly',
 ].join(',');
 
+// Only the per-user Devices section needs these.
+export const DEVICE_SCOPES = [
+  'https://www.googleapis.com/auth/admin.directory.device.mobile.readonly',
+  'https://www.googleapis.com/auth/cloud-identity.devices.readonly',
+].join(',');
+
 const EMPTY_FORM = { domain: '', label: '', admin_email: '', service_account_json: '' };
 
 const formatDateTime = (value) => {
@@ -122,6 +128,13 @@ function SetupGuide() {
               same delegation entry and add these two scopes after the ones above. The user list keeps working without them.
               <CopyValue label="Activity report scopes (read-only)" value={ACTIVITY_SCOPES} />
               The Admin SDK API you enabled already covers the reports. Drive and Gmail logs also depend on your Workspace edition.
+            </li>
+            <li>
+              <b>Optional, for a user&apos;s Devices section</b> (make, model, serial number, laptop or mobile): add these two
+              scopes to the same entry, and in the Google Cloud project also enable the <b>Cloud Identity API</b> (the
+              computers and laptops list comes from it).
+              <CopyValue label="Device scopes (read-only)" value={DEVICE_SCOPES} />
+              Edit the existing entry and keep every scope already on it, because saving replaces the whole list.
             </li>
             <li>
               Add the domain below with a <b>super admin</b> email for the service account to act as, and upload the

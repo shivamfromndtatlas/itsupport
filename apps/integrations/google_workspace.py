@@ -14,6 +14,8 @@ The Directory API has no "which groups is everyone in" call, and
 and inverting the result costs one request per *group*, which is far fewer on
 any realistic directory.
 """
+import base64
+import binascii
 import json
 import threading
 import time
@@ -39,6 +41,12 @@ SCOPES = (
 # for anyone who hasn't added the reports scopes yet, and bundling them with each
 # other would blame both when only one is missing. Audit covers the Drive, login
 # and Gmail event logs; usage covers the per-day email counts.
+CLOUD_IDENTITY_BASE = 'https://cloudidentity.googleapis.com/v1'
+# Device lookups follow the same one-scope-per-token rule. Mobile devices come from the
+# Directory API; desktops/laptops (and mobile devices under advanced management) from
+# Cloud Identity, which also needs the "Cloud Identity API" enabled in the Cloud project.
+MOBILE_SCOPES = ('https://www.googleapis.com/auth/admin.directory.device.mobile.readonly',)
+CLOUD_IDENTITY_SCOPES = ('https://www.googleapis.com/auth/cloud-identity.devices.readonly',)
 AUDIT_SCOPES = ('https://www.googleapis.com/auth/admin.reports.audit.readonly',)
 USAGE_SCOPES = ('https://www.googleapis.com/auth/admin.reports.usage.readonly',)
 
@@ -50,6 +58,13 @@ USAGE_FETCH_WORKERS = 8
 # Usage reports trail real time; asking for a day Google hasn't computed yet is a 400.
 USAGE_LAG_DAYS = 3
 MAX_ACTIVITY_EVENTS = 3000
+# Google's responses use full MIME types ("image/jpeg"); the short names are accepted too.
+PHOTO_MIME_TYPES = {
+    'image/jpeg': 'image/jpeg', 'image/jpg': 'image/jpeg', 'image/png': 'image/png',
+    'image/gif': 'image/gif', 'image/bmp': 'image/bmp',
+    'jpeg': 'image/jpeg', 'jpg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif', 'bmp': 'image/bmp',
+}
+MAX_PHOTO_BYTES = 300 * 1024
 # The Directory API stamps users who have never signed in with the Unix epoch.
 NEVER_LOGGED_IN = '1970-01-01T00:00:00.000Z'
 
@@ -158,7 +173,7 @@ class GoogleWorkspaceClient:
         url = f'{base}{path}'
         if params:
             url = f'{url}?{urlencode(params)}'
-        reports = base == REPORTS_BASE
+        api = 'reports' if base == REPORTS_BASE else 'cloudidentity' if base == CLOUD_IDENTITY_BASE else 'directory'
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             request = Request(
@@ -177,7 +192,7 @@ class GoogleWorkspaceClient:
                     time.sleep(2 ** (attempt - 1))
                     continue
                 raise GoogleWorkspaceError(
-                    self._describe_http_error(exc.code, message, reason, reports=reports), status_code=exc.code
+                    self._describe_http_error(exc.code, message, reason, api=api), status_code=exc.code
                 ) from exc
             except (URLError, TimeoutError) as exc:
                 if attempt < MAX_ATTEMPTS:
@@ -186,12 +201,21 @@ class GoogleWorkspaceClient:
                 raise GoogleWorkspaceError(f'Could not reach the Google Admin SDK: {getattr(exc, "reason", exc)}') from exc
 
     @staticmethod
-    def _describe_http_error(code, message, reason, reports=False):
+    def _describe_http_error(code, message, reason, api='directory'):
         lowered = (message or '').lower()
+        reports = api == 'reports'
         if code == 403 and ('has not been used' in lowered or 'is disabled' in lowered or reason == 'accessNotConfigured'):
+            product = 'Cloud Identity API' if api == 'cloudidentity' else 'Admin SDK API'
             return (
-                'The Admin SDK API is not enabled for the Google Cloud project that owns this service '
-                'account. Enable "Admin SDK API" in that project and try again.'
+                f'The {product} is not enabled for the Google Cloud project that owns this service '
+                f'account. Enable "{product}" in that project and try again.'
+                + (f' Google said: {message}' if message else '')
+            )
+        if code == 403 and api == 'cloudidentity':
+            return (
+                'Google denied access to the device list. The impersonated admin must be a super admin, '
+                'and delegation must include the Cloud Identity devices scope.'
+                + (f' ({message})' if message else '')
             )
         if code == 403 and reports:
             return (
@@ -213,18 +237,78 @@ class GoogleWorkspaceClient:
             return 'Google rejected the access token.'
         return f'Google Directory API returned HTTP {code}: {message or reason or "no detail"}'
 
-    def _paginate(self, path, params, items_key):
+    def _paginate(self, path, params, items_key, **api):
         items = []
         page_token = None
         while True:
             page_params = dict(params)
             if page_token:
                 page_params['pageToken'] = page_token
-            data = self._get(path, page_params)
+            data = self._get(path, page_params, **api)
             items.extend(data.get(items_key) or [])
             page_token = data.get('nextPageToken')
             if not page_token:
                 return items
+
+    def list_mobile_devices(self, email):
+        """Android / iOS / Google Sync devices that user has signed in on (Directory API)."""
+        devices = self._paginate(
+            '/customer/my_customer/devices/mobile',
+            {'query': f'email:{email}', 'projection': 'FULL', 'maxResults': 100},
+            'mobiledevices',
+            scopes=MOBILE_SCOPES,
+        )
+        # The query is a search, not an exact match, so keep only devices this address owns.
+        wanted = email.lower()
+        return [d for d in devices if wanted in [str(e).lower() for e in d.get('email') or []]]
+
+    def user_photo(self, user_key):
+        """
+        The user's profile picture as a ``data:`` URI, or None when they have none (or it's in a
+        format a browser can't show). Google returns web-safe base64, which browsers don't accept.
+        """
+        try:
+            data = self._get(f'/users/{quote(user_key, safe="")}/photos/thumbnail')
+        except GoogleWorkspaceError as exc:
+            if exc.status_code == 404:  # no photo uploaded
+                return None
+            raise
+        mime = PHOTO_MIME_TYPES.get(str(data.get('mimeType') or '').strip().lower())
+        encoded = str(data.get('photoData') or '').replace('-', '+').replace('_', '/')
+        if not mime or not encoded:
+            return None
+        encoded += '=' * (-len(encoded) % 4)
+        try:
+            size = len(base64.b64decode(encoded, validate=True))
+        except (binascii.Error, ValueError):
+            return None
+        if size > MAX_PHOTO_BYTES:
+            return None
+        return f'data:{mime};base64,{encoded}'
+
+    def list_all_mobile_devices(self):
+        """Every user-registered Android / iOS / Google Sync device in the account."""
+        return self._paginate(
+            '/customer/my_customer/devices/mobile',
+            {'projection': 'FULL', 'maxResults': 100},
+            'mobiledevices',
+            scopes=MOBILE_SCOPES,
+        )
+
+    def cloud_identity_devices(self):
+        """
+        Every user-registered device in the account, with the users signed in on each, as
+        ``{'devices': {name: device}, 'device_users': [deviceUser]}``. Cloud Identity can't
+        filter users by email, so the whole fleet is read once (the view caches it) and
+        looked up in memory; device users page at 20, so this is the slow call.
+        """
+        scope = {'base': CLOUD_IDENTITY_BASE, 'scopes': CLOUD_IDENTITY_SCOPES}
+        customer = {'customer': 'customers/my_customer'}
+        devices = self._paginate(
+            '/devices', {**customer, 'view': 'USER_ASSIGNED_DEVICES', 'pageSize': 100}, 'devices', **scope
+        )
+        device_users = self._paginate('/devices/-/deviceUsers', {**customer, 'pageSize': 20}, 'deviceUsers', **scope)
+        return {'devices': {d['name']: d for d in devices if d.get('name')}, 'device_users': device_users}
 
     def ping(self, domain):
         """Cheapest calls that prove both scopes work; raises GoogleWorkspaceError otherwise."""
@@ -381,6 +465,9 @@ def normalize_user(raw):
             for phone in raw.get('phones') or []
             if phone.get('value')
         ],
+        # The URL itself is private/temporary, so only its presence is kept: the image is fetched
+        # separately through the photo API. Absent when the user never uploaded a picture.
+        'has_photo': bool(raw.get('thumbnailPhotoUrl')),
         'is_admin': bool(raw.get('isAdmin')),
         'is_delegated_admin': bool(raw.get('isDelegatedAdmin')),
         'suspended': bool(raw.get('suspended')),
