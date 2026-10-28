@@ -12,7 +12,7 @@ from apps.users.models import User
 
 from .models import SureMDMConnection, SynthesiaConnection, SynthesiaInvoice, TrellixConnection
 from .trellix import TrellixClient
-from .suremdm import SureMDMClient
+from .suremdm import SureMDMClient, SureMDMError
 from .synthesia import SynthesiaClient
 
 
@@ -387,6 +387,101 @@ class SureMDMIntegrationTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['total_points'], 1)
         self.assertEqual(response.data['results'][0]['address'], 'In range')
+
+    @patch.object(SureMDMClient, 'post')
+    def test_search_jobs_base64_encodes_the_search_value(self, post):
+        post.return_value = (200, {'message': 'Success', 'data': {'total': 1, 'rows': [{'JobID': 'job-1'}]}})
+        client = SureMDMClient(base_url='https://suremdm.42gears.com/api', username='user', password='pass', api_key='key')
+
+        jobs = client.search_jobs(platform='windows', search='test')
+
+        self.assertEqual(jobs, [{'JobID': 'job-1'}])
+        path, payload = post.call_args.args
+        self.assertEqual(path, 'v2/job/Search')
+        self.assertEqual(payload['Platform'], 'windows')
+        self.assertEqual(payload['SearchValue'], 'dGVzdA==')
+
+    @patch.object(SureMDMClient, 'post')
+    def test_apply_job_raises_when_suremdm_reports_failure(self, post):
+        post.return_value = (200, {'message': 'Failed to apply job', 'data': None, 'status': False})
+        client = SureMDMClient(base_url='https://suremdm.42gears.com/api', username='user', password='pass', api_key='key')
+
+        with self.assertRaises(SureMDMError):
+            client.apply_job('job-1', ['dev-1'])
+
+    @patch('apps.integrations.views.SureMDMClient.search_jobs')
+    def test_jobs_endpoint_normalizes_rows(self, search_jobs):
+        search_jobs.return_value = [
+            {'JobID': 'job-1', 'JobName': 'Trellix Agent', 'Type': 'Install Application', 'Platform': 'Windows'},
+            {'JobName': 'No id, dropped'},
+        ]
+
+        response = self.client.get(reverse('suremdm-jobs'), {'platform': 'windows'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['results'][0]['job_id'], 'job-1')
+        self.assertEqual(response.data['results'][0]['name'], 'Trellix Agent')
+
+    def test_jobs_endpoint_rejects_unknown_platform(self):
+        response = self.client.get(reverse('suremdm-jobs'), {'platform': 'beos'})
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch.object(SureMDMClient, 'post')
+    def test_deploy_applies_job_to_deduplicated_devices(self, post):
+        post.return_value = (200, {'message': 'Success', 'data': None, 'status': True})
+
+        response = self.client.post(
+            reverse('suremdm-deploy'),
+            {'job_id': 'job-1', 'device_ids': ['dev-1', 'dev-2', 'dev-1', '']},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['device_count'], 2)
+        post.assert_called_once_with(
+            'v2/jobassignment', {'JobId': 'job-1', 'DeviceIds': ['dev-1', 'dev-2'], 'DownloadType': '2'}
+        )
+
+    def test_deploy_requires_job_and_devices(self):
+        response = self.client.post(reverse('suremdm-deploy'), {'job_id': '', 'device_ids': ['dev-1']}, format='json')
+        self.assertEqual(response.status_code, 400)
+
+        response = self.client.post(reverse('suremdm-deploy'), {'job_id': 'job-1', 'device_ids': []}, format='json')
+        self.assertEqual(response.status_code, 400)
+
+    def test_deploy_is_forbidden_for_non_it_users(self):
+        other = User.objects.create_user(
+            email='staff@example.com', password='password', full_name='Staff', role='employee',
+        )
+        self.client.force_authenticate(other)
+
+        response = self.client.post(reverse('suremdm-deploy'), {'job_id': 'job-1', 'device_ids': ['dev-1']}, format='json')
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch.object(SureMDMClient, 'get')
+    def test_job_status_returns_latest_entry_for_the_job(self, get):
+        def queue_for(path, params=None):
+            if path.endswith('/dev-1/true'):
+                return 200, [
+                    {'JobID': 'JOB-1', 'JobName': 'Trellix Agent', 'Time': '10/1/2026 9:00:00 AM', 'Status': 'PENDING'},
+                    {'JobID': 'job-1', 'JobName': 'Trellix Agent', 'Time': '10/2/2026 9:00:00 AM', 'Status': 'DEPLOYED', 'Success': '1'},
+                    {'JobID': 'other', 'JobName': 'Wallpaper', 'Time': '10/3/2026 9:00:00 AM', 'Status': 'DEPLOYED'},
+                ]
+            return 200, []
+
+        get.side_effect = queue_for
+
+        response = self.client.get(reverse('suremdm-job-status'), {'device_ids': 'dev-1,dev-2', 'job_id': 'job-1'})
+
+        self.assertEqual(response.status_code, 200)
+        rows = {row['suremdm_device_id']: row for row in response.data['results']}
+        self.assertEqual(rows['dev-1']['status'], 'DEPLOYED')
+        self.assertTrue(rows['dev-1']['success'])
+        self.assertEqual(rows['dev-1']['applied_at'], '2026-10-02T09:00:00+00:00')
+        self.assertEqual(rows['dev-2']['status'], 'NOT_QUEUED')
 
     def test_connection_response_does_not_expose_secrets(self):
         response = self.client.get(reverse('suremdm-connection'))

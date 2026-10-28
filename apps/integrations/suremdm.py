@@ -1,7 +1,7 @@
 import base64
 import json
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin
+from urllib.parse import quote, urlencode, urljoin
 from urllib.request import ProxyHandler, Request, build_opener
 
 
@@ -144,6 +144,54 @@ class SureMDMClient:
         payload = {'JobType': 'GET_DEVICE_APPS', 'DeviceID': str(device_id)}
         self.post('dynamicjob', payload)
         return True
+
+    def search_jobs(self, platform='windows', search='', limit=200):
+        """
+        List jobs already built in the SureMDM console (POST /api/v2/job/Search).
+
+        SureMDM expects SearchValue base64-encoded; an empty string matches
+        every job. Platform values are lowercase ("windows", "android", ...),
+        and "any" covers jobs that are not tied to one platform.
+        """
+        payload = {
+            'Platform': platform,
+            'SearchValue': base64.b64encode(search.encode()).decode(),
+            'Limit': limit,
+            'Offset': 0,
+            'SortColumn': 'JobName',
+            'SortOrder': 'asc',
+        }
+        _, data = self.post('v2/job/Search', payload)
+        return self._first_list(data, 'rows', 'Rows')
+
+    def apply_job(self, job_id, device_ids, download_type='2'):
+        """
+        Queue a job on one or more devices right away (POST /api/v2/jobassignment).
+
+        download_type '2' lets install jobs download over any network. Devices
+        that are offline pick the job up the next time they check in.
+        """
+        ids = [str(device_id) for device_id in device_ids if device_id]
+        if not job_id or not ids:
+            return False
+
+        payload = {'JobId': str(job_id), 'DeviceIds': ids, 'DownloadType': str(download_type)}
+        _, data = self.post('v2/jobassignment', payload)
+        if isinstance(data, dict) and data.get('status') is False:
+            raise SureMDMError(data.get('message') or 'SureMDM failed to apply the job.')
+        return True
+
+    def device_job_queue(self, device_id, show_all=True):
+        """
+        Jobs queued on a device with their status: DEPLOYED, SCHEDULED or
+        PENDING (GET /api/v2/jobqueue/Devices/{DeviceID}/{ShowAll}).
+        """
+        if not device_id:
+            return []
+
+        show_all = 'true' if show_all else 'false'
+        _, data = self.get(f'v2/jobqueue/Devices/{quote(str(device_id), safe="")}/{show_all}')
+        return self._first_list(data, 'rows', 'Rows', 'data')
 
     def _location_points(self, data):
         """

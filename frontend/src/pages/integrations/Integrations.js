@@ -38,6 +38,7 @@ import { DataGrid } from '@mui/x-data-grid';
 import api from '../../api/axios';
 import TrellixPanel from './TrellixPanel';
 import SynthesiaPanel from './SynthesiaPanel';
+import SureMDMDeployPanel from './SureMDMDeployPanel';
 import TeamViewerPanel from './TeamViewerPanel';
 import DellSupportPanel from './DellSupportPanel';
 
@@ -480,6 +481,7 @@ function SureMDMPanel() {
     speedColumn,
   ];
 
+  const activeEmployees = employees.filter((employee) => employee.status === 'active');
   const selectedEmployee = employees.find((employee) => String(employee.id) === String(selectedEmployeeId));
   const locationHistoryEmployee = employees.find(
     (employee) => String(employee.id) === String(locationHistoryEmployeeId)
@@ -770,6 +772,10 @@ function SureMDMPanel() {
         </Grid>
 
         <Grid item xs={12}>
+          <SureMDMDeployPanel devices={devices} />
+        </Grid>
+
+        <Grid item xs={12}>
           <Card sx={{ borderRadius: 2, boxShadow: 2 }}>
             <CardContent sx={{ p: 3 }}>
               <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
@@ -802,7 +808,7 @@ function SureMDMPanel() {
                     onChange={(e) => setSelectedEmployeeId(e.target.value)}
                   >
                     <MenuItem value="">All users</MenuItem>
-                    {employees.map((employee) => (
+                    {activeEmployees.map((employee) => (
                       <MenuItem key={employee.id} value={employee.id}>
                         {employee.full_name || employee.employee_id}
                       </MenuItem>

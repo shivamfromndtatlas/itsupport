@@ -1219,6 +1219,154 @@ class SureMDMViewSet(ViewSet):
             'results': results,
         })
 
+    @action(detail=False, methods=['get'], url_path='jobs')
+    def jobs(self, request):
+        """Jobs built in the SureMDM console that can be deployed from here."""
+        connection, error = self._configured_connection()
+        if error:
+            return error
+
+        platform = request.query_params.get('platform') or 'windows'
+        if platform not in SUREMDM_JOB_PLATFORMS:
+            return Response(
+                {'detail': f'platform must be one of: {", ".join(SUREMDM_JOB_PLATFORMS)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            jobs = get_client(connection).search_jobs(
+                platform=platform,
+                search=request.query_params.get('search') or '',
+            )
+        except SureMDMError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+
+        results = [normalize_suremdm_job(job) for job in jobs if isinstance(job, dict)]
+        results = [job for job in results if job['job_id']]
+        return Response({'count': len(results), 'results': results})
+
+    @action(detail=False, methods=['post'], url_path='deploy')
+    def deploy(self, request):
+        """Queue a SureMDM job (e.g. an agent install) on the selected devices."""
+        connection, error = self._configured_connection()
+        if error:
+            return error
+
+        job_id = str(request.data.get('job_id') or '').strip()
+        device_ids = request.data.get('device_ids') or []
+        if not isinstance(device_ids, list):
+            return Response({'detail': 'device_ids must be a list.'}, status=status.HTTP_400_BAD_REQUEST)
+        device_ids = list(dict.fromkeys(str(device_id).strip() for device_id in device_ids if str(device_id).strip()))
+        if not job_id:
+            return Response({'detail': 'Choose a job to deploy.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not device_ids:
+            return Response({'detail': 'Choose at least one device.'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(device_ids) > SUREMDM_MAX_DEPLOY_DEVICES:
+            return Response(
+                {'detail': f'Deploy to at most {SUREMDM_MAX_DEPLOY_DEVICES} devices at a time.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            get_client(connection).apply_job(job_id, device_ids)
+        except SureMDMError as exc:
+            response_status = status.HTTP_401_UNAUTHORIZED if exc.status_code == 401 else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': str(exc)}, status=response_status)
+
+        return Response({
+            'status': 'queued',
+            'job_id': job_id,
+            'device_count': len(device_ids),
+            'message': (
+                f'Job queued on {len(device_ids)} device(s). Online devices receive it '
+                'right away; offline devices get it when they next check in.'
+            ),
+        })
+
+    @action(detail=False, methods=['get'], url_path='job-status')
+    def job_status(self, request):
+        """Latest job-queue entry per device, optionally for one job only."""
+        connection, error = self._configured_connection()
+        if error:
+            return error
+
+        device_ids = [
+            device_id.strip()
+            for device_id in (request.query_params.get('device_ids') or '').split(',')
+            if device_id.strip()
+        ]
+        if not device_ids:
+            return Response({'detail': 'device_ids is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        device_ids = list(dict.fromkeys(device_ids))[:SUREMDM_MAX_STATUS_DEVICES]
+        job_id = (request.query_params.get('job_id') or '').strip().lower()
+
+        client = get_client(connection)
+        results = []
+        for device_id in device_ids:
+            try:
+                queue = client.device_job_queue(device_id)
+            except SureMDMError as exc:
+                if exc.status_code == 401:
+                    return Response({'detail': str(exc)}, status=status.HTTP_401_UNAUTHORIZED)
+                results.append({'suremdm_device_id': device_id, 'status': 'UNKNOWN', 'error': str(exc)})
+                continue
+
+            entries = [normalize_suremdm_queue_entry(entry, device_id) for entry in queue if isinstance(entry, dict)]
+            if job_id:
+                entries = [entry for entry in entries if entry['job_id'].lower() == job_id]
+            if not entries:
+                results.append({'suremdm_device_id': device_id, 'status': 'NOT_QUEUED', 'error': ''})
+                continue
+            entries.sort(key=lambda entry: entry['applied_at'] or '', reverse=True)
+            results.extend(entries if not job_id else entries[:1])
+
+        return Response({'count': len(results), 'results': results})
+
+
+SUREMDM_JOB_PLATFORMS = ('windows', 'android', 'macos', 'linux', 'ios', 'any')
+SUREMDM_MAX_DEPLOY_DEVICES = 500
+SUREMDM_MAX_STATUS_DEVICES = 50
+
+
+def normalize_suremdm_job(job):
+    return {
+        'job_id': str(job.get('JobID') or job.get('JobId') or ''),
+        'name': job.get('JobName') or '',
+        'type': job.get('Type') or '',
+        'platform': job.get('Platform') or '',
+        'folder': job.get('JobFolderPath') or '',
+        'last_modified': job.get('LastModified') or '',
+    }
+
+
+def normalize_suremdm_queue_entry(entry, device_id):
+    applied_dt = parse_suremdm_queue_time(entry.get('Time'))
+    return {
+        'suremdm_device_id': str(entry.get('DeviceIdJobQueue') or device_id),
+        'job_id': str(entry.get('JobID') or ''),
+        'job_name': entry.get('JobName') or '',
+        'type': entry.get('Type') or '',
+        'status': str(entry.get('Status') or 'UNKNOWN').upper(),
+        'success': str(entry.get('Success') or '') == '1',
+        'applied_at': applied_dt.isoformat() if applied_dt else '',
+        'comments': (entry.get('JobComments') or '').strip(),
+        'error': '',
+    }
+
+
+def parse_suremdm_queue_time(value):
+    """Job-queue times come back like '4/4/2019 7:16:59 AM' (UTC)."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value).strip(), '%m/%d/%Y %I:%M:%S %p').replace(tzinfo=dt_timezone.utc)
+    except ValueError:
+        parsed = parse_datetime(str(value))
+        if parsed and timezone.is_naive(parsed):
+            parsed = parsed.replace(tzinfo=dt_timezone.utc)
+        return parsed
+
 
 def get_teamviewer_connection():
     return TeamViewerConnection.objects.order_by('-updated_at').first()
